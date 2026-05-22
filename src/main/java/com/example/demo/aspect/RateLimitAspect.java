@@ -11,7 +11,7 @@ import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
-import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 import org.springframework.web.context.request.RequestContextHolder;
@@ -31,7 +31,31 @@ import java.util.List;
 @RequiredArgsConstructor
 public class RateLimitAspect {
 
-    private final RedisTemplate<String, Object> redisTemplate;
+    private static final DefaultRedisScript<Long> RATE_LIMIT_SCRIPT;
+
+    static {
+        RATE_LIMIT_SCRIPT = new DefaultRedisScript<>("""
+                local key = KEYS[1]
+                local capacity = tonumber(ARGV[1])
+                local rate = tonumber(ARGV[2])
+                local now = tonumber(ARGV[3])
+                local bucket = redis.call('HMGET', key, 'tokens', 'last_refill_time')
+                local current_tokens = tonumber(bucket[1]) or capacity
+                local last_refill_time = tonumber(bucket[2]) or now
+                local token_will_fill = (now - last_refill_time) / 1000 * rate
+                current_tokens = math.min(token_will_fill + current_tokens, capacity)
+                local allow = 0
+                if current_tokens >= 1 then
+                    current_tokens = current_tokens - 1
+                    allow = 1
+                end
+                redis.call('HSET', key, 'tokens', current_tokens, 'last_refill_time', now)
+                redis.call('EXPIRE', key, 300)
+                return allow
+                """, Long.class);
+    }
+
+    private final StringRedisTemplate stringRedisTemplate;
 
     @Around("@annotation(com.example.demo.annotation.RateLimit)")
     public Object rateLimit(ProceedingJoinPoint joinPoint) throws Throwable {
@@ -79,35 +103,13 @@ public class RateLimitAspect {
      * @return true 获取成功，false 被限流
      */
     private boolean tryAcquire(String key, int ratePerSecond, int maxCapacity) {
-        String script = """
-                local key = KEYS[1]
-                local capacity = tonumber(ARGV[1])
-                local rate = tonumber(ARGV[2])
-                local now = tonumber(ARGV[3])
-                local bucket = redis.call('HMGET', key, 'tokens', 'last_refill_time')
-                local current_tokens = tonumber(bucket[1]) or capacity
-                local last_refill_time = tonumber(bucket[2]) or now
-                local token_will_fill = (now - last_refill_time) / 1000 * rate
-                current_tokens = math.min(token_will_fill + current_tokens, capacity)
-                local allow = 0
-                if current_tokens >= 1 then
-                    current_tokens = current_tokens - 1
-                    allow = 1
-                end
-                redis.call('HSET', key, 'tokens', current_tokens, 'last_refill_time', now)
-                redis.call('EXPIRE', key, 300)
-                return allow
-                """;
-
-        DefaultRedisScript<Long> redisScript = new DefaultRedisScript<>(script, Long.class);
-        Long result = redisTemplate.execute(
-                redisScript,
+        Long result = stringRedisTemplate.execute(
+                RATE_LIMIT_SCRIPT,
                 List.of(key),
                 String.valueOf(maxCapacity),
                 String.valueOf(ratePerSecond),
                 String.valueOf(System.currentTimeMillis())
         );
-
         return result != null && result == 1L;
     }
 }
