@@ -1,0 +1,61 @@
+# ==================== 服务端口 ====================
+server:
+  port: 8080
+
+spring:
+  application:
+    name: demo
+
+  # ==================== 数据源 ====================
+  # 生产环境通过环境变量注入，避免敏感信息写死
+  datasource:
+    url: ${env-database.url}
+    username: ${env-database.username}
+    password: ${env-database.password}
+    driver-class-name: org.sqlite.JDBC
+
+  # 激活的 profile，对应 application-{profile}.yml（如 application-dev.yml）
+  # profiles:
+  #   active: dev
+
+# ==================== MyBatis-Plus ====================
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.example.demo
+  configuration:
+    map-underscore-to-camel-case: true
+    cache-enabled: false
+  global-config:
+    banner: false
+    db-config:
+      # 逻辑删除（默认关闭，实体字段加 @TableLogic 才生效）
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# ==================== 接口文档（SpringDoc / Swagger）====================
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
+
+# ==================== RSA 密钥路径 ====================
+# classpath:key 表示从 resources/key/ 目录加载 private.pem / public.pem
+key-path: ${env-key-path:classpath:key}
+
+# ==================== JWT ====================
+jwt:
+  # 签名密钥（HMAC-SHA256），生产环境务必更换
+  secret-key: ${env-jwt.key}
+  # token 过期时间，默认 7 天（单位：毫秒）
+  ttl: ${env-jwt.ttl:604800000}
+
+# ==================== 文件上传 ====================
+file:
+  protocol: ${env-file.protocol:http}
+  host: ${env-file.host:localhost}
+  port: ${env-file.port:8080}
+  sub-path: ${env-file.sub-path:file}
+  # 文件本地存储路径
+  store-path: ${env-file.store-path:./upload}
