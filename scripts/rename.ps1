@@ -31,16 +31,19 @@ $ArtifactSafe = $ArtifactId -replace "-", "."
 $NewPackage = "${GroupId}.${ArtifactSafe}"
 $NewDir = $NewPackage -replace "\.", "/"
 
+# 获取当前项目根目录名
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ProjectRoot = Resolve-Path "$ScriptDir/.."
+$ProjectName = Split-Path -Leaf $ProjectRoot
+
 Write-Host "========================================"
 Write-Host "  旧包名: $OldPackage"
 Write-Host "  新包名: $NewPackage"
 Write-Host "  artifactId: demo → $ArtifactId"
+Write-Host "  根目录:   $ProjectName/ → $ArtifactId/"
 Write-Host "========================================"
 Write-Host ""
 
-# 切换到项目根目录（脚本所在目录的上级）
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ProjectRoot = Resolve-Path "$ScriptDir/.."
 Set-Location $ProjectRoot
 
 Write-Host "[1/5] 替换文件中的包名引用..."
@@ -161,10 +164,11 @@ if ($TestFile) {
 
 Write-Host ""
 Write-Host "========================================"
-Write-Host "  ✅ 重命名完成!"
+Write-Host "  ✅ 项目内容重命名完成!"
 Write-Host "  包名:     $OldPackage → $NewPackage"
 Write-Host "  artifact: demo → $ArtifactId"
 Write-Host "  主类:     DemoApplication → $NewMainName"
 Write-Host "========================================"
 Write-Host ""
-Write-Host "下一步: 用 IDE 重新打开项目。"
+Write-Host "最后一步：重命名项目根目录"
+Write-Host "  Rename-Item -Path '$ProjectName' -NewName '$ArtifactId'"

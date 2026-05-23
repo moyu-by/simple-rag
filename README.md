@@ -102,7 +102,7 @@ mybatis-plus:
 
 | 步骤 | 改什么 | 说明 |
 |------|--------|------|
-| 1 | 包名/项目名 | 运行 `scripts/rename.sh com.yourcompany yourapp` |
+| 1 | 包名/项目名 | 运行 `scripts/rename.sh com.yourcompany yourapp`，完成后执行 `mv demo yourapp` 改根目录名 |
 | 2 | 数据库配置 | `application-dev.yml` 填入真实数据库连接 |
 | 3 | JWT 密钥 | `application-dev.yml` 将 `env-jwt.key` 换成 `openssl rand -hex 32` |
 | 4 | RSA 密钥 | `resources/key/` 下放入你自己的 `private.pem` / `public.pem` |
@@ -268,7 +268,6 @@ src/main/java/com/example/demo
 ├── aspect/            # AuthAspect, RateLimitAspect, IdempotentAspect
 ├── common/            # Result, PageResult, BaseController, ContextUtil, UserContext
 ├── config/            # MybatisPlusConfig, RedisConfig, JacksonConfig, WebMvcConfig, ...
-
 ├── controller/        # TokenController（获取幂等 token）
 ├── enums/             # RoleEnum
 ├── exception/         # JwtException, AuthException, RateLimitException, FileUploadException
@@ -289,17 +288,25 @@ src/main/resources
 
 ## 重命名脚本
 
-使用 `scripts/` 下的脚本将项目重命名为你自己的项目，支持：
+使用 `scripts/` 下的脚本将项目内容重命名为你自己的项目，完成后手动改根目录名。
+
+支持：
 
 | 脚本 | 平台 |
 |------|------|
 | `rename.sh` | Linux / macOS / Git Bash |
 | `rename.ps1` | Windows PowerShell / PowerShell Core |
 
-自动替换：包名、目录结构、pom.xml 的 groupId/artifactId、application.yml 的应用名、主启动类名。
+**自动替换：** 包名、目录结构、pom.xml 的 groupId/artifactId、application.yml 的应用名、主启动类名。
+
+**不自动改：** 项目根目录名（脚本运行时无法重命名自身所在目录）。
 
 ```bash
+# 1. 替换文件内容
 cd scripts && chmod +x rename.sh && ./rename.sh com.yourcompany yourapp
+
+# 2. 重命名根目录（根据提示执行）
+mv ../demo ../yourapp    # 或 cd .. && mv demo yourapp
 ```
 
 ## 敏感文件说明

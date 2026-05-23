@@ -3,17 +3,27 @@
 # 项目重命名脚本 — Linux / macOS / Git Bash
 #
 # 用法:
-#   ./rename.sh com.mycompany my-app
+#   将脚本复制到项目根目录的上级，然后执行:
+#   bash rename.sh <新groupId> <新artifactId>
 #
 # 示例:
-#   ./rename.sh com.blog blog-server
+#   cd /path/to/  &&  bash /path/to/project/scripts/rename.sh com.mycompany my-app
+#
+# 或者直接执行后再手动重命名根目录:
+#   ./scripts/rename.sh com.mycompany my-app
+#   mv demo my-app    ← 手动执行
 # ====================================================
 
 set -e
 
 if [ "$#" -ne 2 ]; then
-    echo "用法: ./rename.sh <新groupId> <新artifactId>"
-    echo "示例: ./rename.sh com.mycompany my-app"
+    echo "用法: bash rename.sh <新groupId> <新artifactId>"
+    echo "示例:"
+    echo "  # 方案 A：从项目内部执行，再手动改名"
+    echo "  cd demo && ./scripts/rename.sh com.mycompany my-app && cd .. && mv demo my-app"
+    echo ""
+    echo "  # 方案 B：从项目外部执行，自动改根目录名"
+    echo "  mv demo my-app && cd my-app && ./scripts/rename.sh com.mycompany my-app"
     exit 1
 fi
 
@@ -28,14 +38,19 @@ NEW_ARTIFACT_SAFE="${NEW_ARTIFACT//-/.}"
 NEW_PACKAGE="${NEW_GROUP}.${NEW_ARTIFACT_SAFE}"
 NEW_DIR="${NEW_PACKAGE//./\/}"
 
+# 获取当前目录名（判断是否在项目根目录内）
+CURRENT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PROJECT_NAME="$(basename "$CURRENT_DIR")"
+
 echo "========================================"
 echo "  旧包名: ${OLD_PACKAGE}"
 echo "  新包名: ${NEW_PACKAGE}"
 echo "  artifactId: demo → ${NEW_ARTIFACT}"
+echo "  根目录:   ${PROJECT_NAME}/ → ${NEW_ARTIFACT}/"
 echo "========================================"
 echo ""
 
-PROJECT_ROOT="$(dirname "$0")/.."
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 # ==================== 1. 替换文件内容 ====================
@@ -109,10 +124,12 @@ fi
 
 echo ""
 echo "========================================"
-echo "  ✅ 重命名完成!"
+echo "  ✅ 项目内容重命名完成!"
 echo "  包名:     ${OLD_PACKAGE} → ${NEW_PACKAGE}"
 echo "  artifact: demo → ${NEW_ARTIFACT}"
 echo "  主类:     DemoApplication → ${NEW_MAIN_NAME}"
 echo "========================================"
 echo ""
-echo "下一步: 用 IDE 重新打开项目。"
+echo "最后一步：重命名项目根目录"
+echo "  mv '${PROJECT_NAME}' '${NEW_ARTIFACT}'"
+echo ""
