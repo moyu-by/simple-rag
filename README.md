@@ -320,6 +320,155 @@ mv ../demo ../yourapp    # 或 cd .. && mv demo yourapp
 
 新用户搭建时需自行创建 `application-dev.yml`（可参考 `application-dev.yml.example`）并生成 RSA 密钥。
 
+## 扩展指南
+
+### 角色扩展
+
+模板默认三种角色，加新角色只需两步：
+
+**1. 在 `RoleEnum` 加枚举值**
+
+```java
+public enum RoleEnum {
+    USER(0, "普通用户"),
+    EDITOR(1, "编辑"),          // ← 新增
+    STAFF(2, "运营"),           // ← 新增
+    ADMIN(3, "管理员"),
+    BOSS(4, "超级管理员");
+    // ...
+}
+```
+
+**2. 在接口上注解读写**
+
+```java
+// 单一角色
+@RoleRequired(RoleEnum.EDITOR)
+@PutMapping("/article/{id}")
+public Result<Void> updateArticle(@PathVariable Long id, ...) { }
+
+// 多个角色（满足其一即可）
+@RoleRequired({RoleEnum.EDITOR, RoleEnum.STAFF})
+@GetMapping("/content/manage")
+public Result<?> manageContent() { }
+```
+
+不需要加注解文件、不需要改切面。`RoleEnum` 是唯一改动点。
+
+### 异常扩展
+
+加新的业务异常：
+
+**1. 建异常类**
+
+```java
+// exception/OrderException.java
+import lombok.Getter;
+
+@Getter
+public class OrderException extends RuntimeException {
+    private final Type type;
+
+    @Getter
+    @AllArgsConstructor
+    public enum Type {
+        ORDER_NOT_EXIST("订单不存在"),
+        ORDER_CANCELLED("订单已取消");
+
+        private final String message;
+    }
+
+    public OrderException(Type type) {
+        super(type.getMessage());
+        this.type = type;
+    }
+}
+```
+
+**2. 在 `GlobalExceptionHandler` 加处理方法**
+
+```java
+@ExceptionHandler(OrderException.class)
+public ResponseEntity<Result<Void>> handleOrder(OrderException e) {
+    log.warn("订单异常", e);
+    return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+            .body(Result.fail(HttpStatus.BAD_REQUEST.value(), e.getMessage()));
+}
+```
+
+### 限流扩展
+
+`@RateLimit` 支持三个参数，按场景调：
+
+```java
+// 严格（发送验证码）：1秒1个，无突发
+@RateLimit(ratePerSecond = 1, maxCapacity = 1)
+
+// 普通（查询接口）：每秒100个，突发200
+@RateLimit(ratePerSecond = 100, maxCapacity = 200)
+
+// 中等（登录接口）
+@RateLimit(ratePerSecond = 3, maxCapacity = 5)
+```
+
+如需自定义限流维度（如按业务 ID 而非 userId/IP），修改 `RateLimitAspect.buildKey()`：
+
+```java
+private String buildKey() {
+    String bizId = request.getParameter("bizId");
+    return "rate:biz:" + bizId;   // 改为按业务 ID 限流
+}
+```
+
+### 文件上传扩展
+
+默认只有通用的扩展名集合 `IMAGE_EXTENSIONS` 和 `DOCUMENT_EXTENSIONS`。加新类型：
+
+```java
+// 视频
+public static final Set<String> VIDEO_EXTENSIONS = Set.of("mp4", "avi", "mov");
+
+// 使用时
+var config = UploadConfig.builder()
+    .allowedExtensions(VIDEO_EXTENSIONS)
+    .maxFileSize(100 * 1024 * 1024)   // 视频 100MB
+    .build();
+```
+
+### 业务实体扩展
+
+模板不包含业务代码。添加新实体的流程：
+
+```
+1. entity/                建实体类（@TableName、@TableId、@TableLogic）
+2. mapper/                建 Mapper 接口（extends BaseMapper<Entity>）
+3. service/ + impl/       建 Service 接口（extends IService<Entity>）+ 实现
+4. controller/            建 Controller（extends BaseController<Service, Entity> 或自定义）
+```
+
+使用 `BaseController` 时，步骤 4 一行不写即可获得 6 个接口。
+
+### 配置属性扩展
+
+用 `@ConfigurationProperties` 集中管理配置，IDE 有自动补全（依赖 `configuration-processor`）：
+
+```java
+@Data
+@Component
+@ConfigurationProperties(prefix = "my-app")
+public class MyAppProperties {
+    private String someKey;
+    private int someValue = 10;    // 默认值
+}
+```
+
+```yaml
+# application.yml
+my-app:
+  some-key: hello
+  some-value: 20
+```
+
 ## 许可证
 
 MIT
