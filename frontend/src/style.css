@@ -1,0 +1,32 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  height: 100%;
+  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', Arial, sans-serif;
+  background: #f5f7fa;
+  color: #303133;
+}
+
+/* 页面通用容器 */
+.page-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+/* 卡片间距 */
+.el-card {
+  margin-bottom: 16px;
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+  .page-container {
+    padding: 12px;
+  }
+}

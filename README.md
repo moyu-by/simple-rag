@@ -1,472 +1,480 @@
-# Spring Boot 项目通用样板
+# RAG 知识库系统
 
-一套即拿即用的 Spring Boot 项目模板，消灭 80% 的固定流程代码。
+基于 Spring Boot 4 + Spring AI + pgvector 的 RAG（检索增强生成）知识库系统。上传文档 → 自动向量化 → 对话问答，每个知识库可独立配置 LLM 提供商。
+
+## 架构总览
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                         前端 / API 调用方                         │
+└────────────┬───────────────┬───────────────┬─────────────────────┘
+             │               │               │
+             ▼               ▼               ▼
+     ┌──────────┐   ┌──────────────┐   ┌──────────┐
+     │ 知识库管理 │   │  文档上传      │   │ RAG 对话 │
+     │ CRUD +   │   │  异步处理队列  │   │ 检索+生成 │
+     │ 成员权限  │   │               │   │ (SSE流式) │
+     └────┬─────┘   └──────┬───────┘   └────┬─────┘
+          │                │                │
+          ▼                ▼                ▼
+     ┌─────────────────────────────────────────────┐
+     │              ModelFactory                    │
+     │  根据 provider 动态构建 Embedding/Chat 模型   │
+     │  支持 OpenAI 协议 + 兼容 API (OneAPI/vLLM)   │
+     └────────────────┬────────────────────────────┘
+                      │
+          ┌───────────┴───────────┐
+          ▼                       ▼
+   ┌─────────────┐        ┌─────────────┐
+   │ 嵌入模型 API │        │ 对话模型 API │
+   │ (向量化文字) │        │ (生成答案)   │
+   └──────┬──────┘        └─────────────┘
+          │
+          ▼
+   ┌─────────────┐
+   │  pgvector    │
+   │  向量相似度   │
+   │  检索        │
+   └─────────────┘
+```
+
+**一条请求的完整旅程**：
+
+```
+用户提问："怎么退款？"
+  │
+  ▼
+1. 嵌入模型把问题变成 1536 维向量
+  │
+  ▼
+2. pgvector 查余弦距离最近的 5 个文档块
+  │
+  ▼
+3. 拼成提示词：
+   "你是知识库助手。资料：...[退款流程说明]...  用户问题：怎么退款？"
+  │
+  ▼
+4. 对话模型生成答案 → 流式返回前端逐字显示
+```
 
 ## 技术栈
 
-| 框架 | 版本 | 说明 |
+| 组件 | 版本 | 用途 |
 |------|------|------|
-| Spring Boot | 4.0.6 | ⚠️ 仅兼容 Spring Boot 4，见下方兼容说明 |
-| Java | 25 | |
-| MyBatis-Plus | 3.5.16 | 分页 + 自动填充 + 逻辑删除 |
-| Redis (Spring Data) | 3.x | 限流、幂等、缓存 |
-| JWT (jjwt) | 0.13.0 | 认证 |
-| Hutool | 5.8.44 | 工具库（RSA、IP 提取等） |
+| Spring Boot | 4.0.6 | 应用框架 |
+| Java | 25 | 语言 |
+| Spring AI | 1.1.7 | OpenAI 聊天/嵌入模型接入 |
+| PostgreSQL + pgvector | 16+ | 数据库 + 向量存储/检索 |
+| MyBatis-Plus | 3.5.16 | ORM（分页、自动填充） |
+| Redis | 7.x | 令牌桶限流、幂等校验 |
+| JWT (jjwt) | 0.13.0 | 用户认证 |
+| Apache Tika | 3.1.0 | 文档解析（PDF/Word/PPT/TXT） |
+| Hutool | 5.8.44 | 工具库（RSA/AES 加密、JSON 等） |
 | SpringDoc | 3.0.3 | Swagger UI |
-| Lombok | 1.18.46 | |
-| Configuration Processor | — | `@ConfigurationProperties` IDE 自动补全 |
-| Jackson 3 | 3.1.2 | JSON 序列化（`tools.jackson`） |
-| 数据库驱动 | — | ⚠️ 未引入依赖，见下方数据源说明 |
+| Bouncy Castle | 1.83 | 加密算法支持 |
+| Lombok | 1.18+ | 代码简化 |
 
-## 默认配置一览
+## 快速开始
 
-### 服务
+### 1. 环境准备
 
-```yaml
-server:
-  port: 8080
+- **Java 25**（Spring Boot 4 要求 Java 24+）
+- **PostgreSQL 16+** + pgvector 扩展
+- **Redis 7+**
+- **Maven 3.9+**
+
+### 2. 安装 pgvector 扩展
+
+```bash
+# 连接 rag 数据库
+psql -h localhost -U postgres -d rag
+
+# 安装扩展
+CREATE EXTENSION IF NOT EXISTS vector;
+
+# 验证
+SELECT extname FROM pg_extension;
 ```
 
-### 数据源（必须改）
+### 3. 初始化数据库
 
-> ⚠️ pom.xml 中**未引入数据库驱动**，使用前请根据所选数据库自行添加对应依赖（如 SQLite → `sqlite-jdbc`、MySQL → `mysql-connector-j`、PostgreSQL → `postgresql`）。
+执行 `src/main/resources/db/init.sql`：
 
-```yaml
-spring:
-  datasource:
-    url: ${env-database.url}               # 通过环境变量注入
-    username: ${env-database.username}
-    password: ${env-database.password}
-    driver-class-name: org.sqlite.JDBC     # 默认 SQLite，可按需改 MySQL
+```bash
+psql -h localhost -U postgres -d rag -f src/main/resources/db/init.sql
 ```
 
-推荐方式：创建 `application-dev.yml`（已被 `.gitignore` 忽略，不会提交到仓库）：
+### 4. 配置环境
+
+```bash
+# 复制配置模板
+cp src/main/resources/application-dev.yml.example src/main/resources/application-dev.yml
+
+# 编辑 application-dev.yml，填入真实配置
+vim src/main/resources/application-dev.yml
+```
+
+必填项：
 
 ```yaml
+# 数据库
 env-database:
-  url: jdbc:sqlite:./data/db.sqlite
-  username:
-  password:
+  url: jdbc:postgresql://localhost:5432/rag
+  username: postgres
+  password: your_password
+
+# JWT 签名密钥（openssl rand -hex 32 生成）
+env-jwt:
+  key: <64位十六进制密钥>
+
+# AES 加密密钥（openssl rand -base64 32 生成）
+env-aes:
+  key: <Base64编码的32字节密钥>
+
+# RSA 密钥对（用于登录密码 + API Key 传输加密）
+# 放入 src/main/resources/key/private.pem 和 public.pem
 ```
 
-### JWT
+### 5. 生成 RSA 密钥
 
-```yaml
-jwt:
-  secret-key: ${env-jwt.key}     # 无默认值，必须配置
-  ttl: 604800000                 # 7 天（毫秒）
+```bash
+mkdir -p src/main/resources/key
+openssl genpkey -algorithm RSA -out src/main/resources/key/private.pem -pkeyopt rsa_keygen_bits:2048
+openssl rsa -pubout -in src/main/resources/key/private.pem -out src/main/resources/key/public.pem
 ```
 
-### 文件上传
+### 6. 启动
 
-```yaml
-file:
-  protocol: http
-  host: localhost
-  port: 8080
-  sub-path: file
-  store-path: ./upload            # 本地存储目录
+```bash
+./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+# 或
+mvn spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
-### RSA 密钥
+## 核心流程：RAG 是怎么工作的？
 
-```yaml
-key-path: classpath:key           # 从 resources/key/ 加载 private.pem / public.pem
-```
-
-### MyBatis-Plus
-
-```yaml
-mybatis-plus:
-  mapper-locations: classpath*:/mapper/**/*.xml
-  type-aliases-package: com.example.demo
-  global-config:
-    db-config:
-      logic-delete-field: deleted    # 逻辑删除字段
-      logic-delete-value: 1          # 已删除
-      logic-not-delete-value: 0      # 未删除
-```
-
-### 异步线程池
-
-```yaml
-# 代码配置，无 yaml 项（在 ThreadPoolConfig 中硬编码）
-# 核心 5 线程，最大 20，队列 100，拒绝策略 CallerRunsPolicy
-```
-
-## 新项目适配清单
-
-从模板创建新项目需要改动以下内容：
-
-### 必须改
-
-| 步骤 | 改什么 | 说明 |
-|------|--------|------|
-| 1 | 包名/项目名 | 运行 `scripts/rename.sh com.yourcompany yourapp`，完成后执行 `mv demo yourapp` 改根目录名 |
-| 2 | 数据库配置 | `application-dev.yml` 填入真实数据库连接 |
-| 3 | JWT 密钥 | `application-dev.yml` 将 `env-jwt.key` 换成 `openssl rand -hex 32` |
-| 4 | RSA 密钥 | `resources/key/` 下放入你自己的 `private.pem` / `public.pem` |
-
-### 按需改
-
-| 配置 | 默认值 | 什么时候改 |
-|------|--------|-----------|
-| `file.store-path` | `./upload` | 需要自定义文件存储目录 |
-| `server.port` | `8080` | 端口冲突 |
-| 线程池参数 | 核心5/最大20/队列100 | 高并发项目需要调大 |
-| `jwt.ttl` | 7天 | 缩短 token 有效期 |
-| 逻辑删除 | `deleted` 字段 / `1`=已删 / `0`=未删 | 如果你的表用不同字段名 |
-
-### 删除模板示例
-
-| 文件 | 说明 |
-|------|------|
-| `src/main/resources/mapper/SampleMapper.xml` | 样板 XML，按需删或改 |
-| `src/main/resources/application-dev.yml.example` | 示例配置参考，用不到可删 |
-
-## 与 Spring Boot 3 的兼容说明
-
-**此模板基于 Spring Boot 4.0.6，不能直接降级到 Spring Boot 3。** 主要差异：
-
-### 1. 起步依赖改名
+### 文档入库流程（一次性）
 
 ```
-Spring Boot 3           →   Spring Boot 4
-─────────────────────────────────────────────────
-spring-boot-starter-web      spring-boot-starter-webmvc
-spring-boot-starter-test     spring-boot-starter-webmvc-test
+上传 PDF/Word/TXT
+    │
+    ▼
+FileUploadUtil.uploadFile()        ← 存磁盘，返回 UUID 文件名
+    │
+    ▼
+documentMapper.insert(doc)         ← 写入 document 表（status=0 处理中）
+    │
+    ▼
+taskExecutor.execute(() -> {       ← 异步线程池，不阻塞 HTTP 响应
+    │
+    ▼
+  Tika 解析文本                    ← PDF/Word → 纯文本
+    │
+    ▼
+  TokenTextSplitter 切块           ← 500字符/块，上下文重叠
+    │
+    ▼
+  EmbeddingModel.embedForResponse() ← 调用嵌入 API，每块 → 1536维向量
+    │
+    ▼
+  存 pgvector                      ← INSERT INTO vector_store
+    │
+    ▼
+  status=1 就绪                    ← 对话时可被检索到
+})
 ```
 
-### 2. Jackson 3（不兼容 Jackson 2）
-
-Spring Boot 4 内置 Jackson 3，包名从 `com.fasterxml.jackson` 改为 `tools.jackson`：
-
-```java
-// Spring Boot 3 (Jackson 2)
-import com.fasterxml.jackson.databind.ObjectMapper;
-
-// Spring Boot 4 (Jackson 3)
-import tools.jackson.databind.ObjectMapper;           // ← 本模板使用
-```
-
-如果降级到 Spring Boot 3，所有 `tools.jackson` 的 import 需要改回 `com.fasterxml.jackson`。
-
-### 3. MyBatis-Plus 依赖不同
+### 对话查询流程（每次对话）
 
 ```
-SB 3: mybatis-plus-spring-boot3-starter
-SB 4: mybatis-plus-spring-boot4-starter  (本模板)
+用户提问
+    │
+    ▼
+EmbeddingModel.embed(问题)          ← 问题 → 向量
+    │
+    ▼
+pgvector 余弦距离检索               ← SELECT ... ORDER BY embedding <=> query_vector
+    │
+    ▼
+取出 Top-K 文档块                   ← 语义最相关的 K 段文字
+    │
+    ▼
+拼成 System Prompt                 ← "你是助手，资料：...[chunks]..."
+    │
+    ▼
+ChatModel 生成答案                  ← 调用 LLM API（支持流式 SSE）
+    │
+    ▼
+返回：答案 + 引用来源               ← 前端可展示"答案来自哪些文档"
 ```
 
-### 4. AOP 依赖
+## API 接口
 
-```
-SB 3: spring-boot-starter-aop  (parent 管理)
-SB 4: aspectjweaver → pom.xml 中直接引入（starter-aop 已不存在）
-```
-
-### 5. Jackson 自动配置类
-
-SB 4 中部分 Jackson 自动配置类路径变化，如 `Jackson2ObjectMapperBuilderCustomizer` 所在包可能有变动。本模板采用直接注入 `ObjectMapper` + `@PostConstruct` 的方式（见 `JacksonConfig.java`），不依赖自动配置类。
-
-### 6. Java 版本
-
-| | 最低要求 | 推荐 |
-|--|---------|------|
-| Spring Boot 3 | Java 17 | Java 21 |
-| Spring Boot 4 | Java 24 | **Java 25**（本模板） |
-
-### 如果想用 Spring Boot 3
-
-将以下依赖替换：
-
-```xml
-<!-- 起步依赖 -->
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-web</artifactId>   <!-- 不是 webmvc -->
-</dependency>
-
-<!-- MyBatis-Plus -->
-<dependency>
-    <groupId>com.baomidou</groupId>
-    <artifactId>mybatis-plus-spring-boot3-starter</artifactId>  <!-- boot3 不是 boot4 -->
-</dependency>
-
-<!-- AOP -->
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-aop</artifactId>  <!-- SB 3 有这个 starter -->
-</dependency>
-```
-
-同时所有 `tools.jackson` 的 import 改为 `com.fasterxml.jackson`。
-
-## 功能清单
-
-### 认证与授权
-
-| 功能 | 实现 |
-|------|------|
-| JWT 登录/校验 | `JwtUtil` + `JwtInterceptor` |
-| 注解式跳过认证 | `@NoLoginRequired` — 标记公开接口 |
-| 角色权限检查 | `@RoleRequired(RoleEnum.ADMIN)` — 灵活可扩展 |
-| 当前用户上下文 | `ContextUtil.getUserId()` / `ContextUtil.getRole()` — 任意层获取 |
-
-### 接口防护
-
-| 功能 | 实现 |
-|------|------|
-| 接口限流 | `@RateLimit` — 令牌桶 + Redis Lua 原子操作 |
-| 幂等校验 | `@Idempotent` — Redis DEL 原子判重 |
-| 参数校验 | `@Valid` / `@Validated` — Jakarta Bean Validation |
-| 全局异常处理 | `GlobalExceptionHandler` — 统一 HTTP 状态码 + 业务码 |
-
-### 通用 CRUD
-
-```java
-@RestController
-@RequestMapping("/users")
-public class UserController extends BaseController<UserService, User> {
-    // 自动继承 6 个接口，一行不写
-}
-```
+### 认证（无需登录）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `page` | `GET /page?current=1&size=20` | 分页查询 |
-| `get` | `GET /{id}` | 查单个 |
-| `save` | `POST /` | 新增 |
-| `update` | `PUT /` | 修改 |
-| `delete` | `DELETE /{id}` | 删除 |
-| `list` | `GET /list` | 全量列表 |
+| GET | `/auth/public-key` | 获取 RSA 公钥（前端加密密码/API Key 用） |
+| POST | `/auth/register` | 注册（密码用 RSA 公钥加密） |
+| POST | `/auth/login` | 登录 → 返回 JWT token |
 
-### 配置中心
+### 知识库管理（需登录）
 
-| 配置类 | 说明 |
-|--------|------|
-| `JacksonConfig` | Long→String 防精度丢失，日期格式化，时区 |
-| `RedisConfig` | JSON 序列化，自动存对象（含 `@class` 类型信息） |
-| `ThreadPoolConfig` | 异步任务线程池 |
-| `WebMvcConfig` | CORS、拦截器、文件静态资源映射 |
-| `JwtProperties` | JWT 配置集中管理（`@ConfigurationProperties`） |
-| `FileProperties` | 文件上传配置集中管理 |
+| 方法 | 路径 | 说明 | 权限 |
+|------|------|------|------|
+| POST | `/knowledge-base` | 创建知识库 | 登录即可 |
+| GET | `/knowledge-base` | 列出我参与的知识库 | 登录即可 |
+| GET | `/knowledge-base/{id}` | 查看知识库详情 | 成员 |
+| PUT | `/knowledge-base/{id}` | 修改知识库信息 | ADMIN+ |
+| DELETE | `/knowledge-base/{id}` | 删除知识库（级联删除） | BOSS |
 
-### 工具类
+### 成员管理
 
-| 工具 | 说明 |
-|------|------|
-| `JwtUtil` | JWT 签发/解析，支持 userId + role |
-| `RsaUtil` | RSA 加密/解密（PEM 密钥文件） |
-| `FileUploadUtil` | 文件上传 + 校验 + 原子写入 |
+| 方法 | 路径 | 说明 | 权限 |
+|------|------|------|------|
+| GET | `/knowledge-base/{kbId}/member` | 列出成员 | 成员 |
+| POST | `/knowledge-base/{kbId}/member` | 添加成员 | ADMIN+ |
+| PUT | `/knowledge-base/{kbId}/member/{userId}` | 修改成员角色 | ADMIN+ |
+| DELETE | `/knowledge-base/{kbId}/member/{userId}` | 移除成员 | ADMIN+ |
 
-## 文件结构
+### 模型配置
 
-```
-src/main/java/com/example/demo
-├── annotation/        # @NoLoginRequired, @RoleRequired, @RateLimit, @Idempotent
-├── aspect/            # AuthAspect, RateLimitAspect, IdempotentAspect
-├── common/            # Result, PageResult, BaseController, ContextUtil, UserContext
-├── config/            # MybatisPlusConfig, RedisConfig, JacksonConfig, WebMvcConfig, ...
-├── controller/        # TokenController（获取幂等 token）
-├── enums/             # RoleEnum
-├── exception/         # JwtException, AuthException, RateLimitException, FileUploadException
-│                      # + GlobalExceptionHandler（全局统一异常处理）
-├── interceptor/       # JwtInterceptor
-└── utils/             # JwtUtil, RsaUtil, FileUploadUtil
+| 方法 | 路径 | 说明 | 权限 |
+|------|------|------|------|
+| GET | `/knowledge-base/{kbId}/model-config` | 列出模型配置 | 成员 |
+| POST | `/knowledge-base/{kbId}/model-config` | 添加模型配置 | ADMIN+ |
+| PUT | `/knowledge-base/{kbId}/model-config/{id}` | 修改模型配置 | ADMIN+ |
+| DELETE | `/knowledge-base/{kbId}/model-config/{id}` | 删除模型配置 | ADMIN+ |
 
-src/main/resources
-├── mapper/
-│   └── SampleMapper.xml       # 样板 XML 映射文件（可删）
-├── key/
-│   ├── private.pem            # RSA 私钥（已 gitignore）
-│   └── public.pem             # RSA 公钥（已 gitignore）
-├── application.yml            # 公共配置
-├── application-dev.yml        # 开发环境配置（已 gitignore）
-└── application-dev.yml.example # 配置参考示例
-```
+### 文档管理
 
-## 重命名脚本
+| 方法 | 路径 | 说明 | 权限 |
+|------|------|------|------|
+| POST | `/knowledge-base/{kbId}/document` | 上传文档（可选自动处理） | ADMIN+ |
+| GET | `/knowledge-base/{kbId}/document` | 列出文档 | 成员 |
+| GET | `/knowledge-base/{kbId}/document/{id}` | 查看文档详情 | 成员 |
+| DELETE | `/knowledge-base/{kbId}/document/{id}` | 删除文档 | ADMIN+ |
 
-使用 `scripts/` 下的脚本将项目内容重命名为你自己的项目，完成后手动改根目录名。
+### RAG 对话
 
-支持：
+| 方法 | 路径 | 说明 | 权限 |
+|------|------|------|------|
+| POST | `/knowledge-base/{kbId}/search` | 纯检索（返回文档块） | 成员 |
+| POST | `/knowledge-base/{kbId}/chat` | RAG 对话（一次返回） | 成员 |
+| POST | `/knowledge-base/{kbId}/chat/stream` | RAG 对话（SSE 流式） | 成员 |
+| POST | `/knowledge-base/{kbId}/document/{id}/process` | 手动触发文档处理 | ADMIN+ |
 
-| 脚本 | 平台 |
-|------|------|
-| `rename.sh` | Linux / macOS / Git Bash |
-| `rename.ps1` | Windows PowerShell / PowerShell Core |
-
-**自动替换：** 包名、目录结构、pom.xml 的 groupId/artifactId、application.yml 的应用名、主启动类名。
-
-**不自动改：** 项目根目录名（脚本运行时无法重命名自身所在目录）。
+### 接口示例
 
 ```bash
-# 1. 替换文件内容
-cd scripts && chmod +x rename.sh && ./rename.sh com.yourcompany yourapp
+# 1. 获取 RSA 公钥
+curl http://localhost:8080/auth/public-key
 
-# 2. 重命名根目录（根据提示执行）
-mv ../demo ../yourapp    # 或 cd .. && mv demo yourapp
+# 2. 注册（前端 RSA 加密密码）
+curl -X POST http://localhost:8080/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"account":"test","password":"<RSA加密后的密码>","encrypted":true}'
+
+# 3. 登录 → 拿到 token
+curl -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"account":"test","password":"<RSA加密后的密码>","encrypted":true}'
+
+# 4. 后续请求带上 token
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:8080/knowledge-base
+
+# 5. RAG 流式对话
+curl -X POST http://localhost:8080/knowledge-base/1/chat/stream \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"怎么退款？","embeddingConfigId":2,"chatConfigId":1}'
 ```
 
-## 敏感文件说明
+## 安全体系
 
-以下文件已被 `.gitignore` 忽略，不会提交到 GitHub，**本地保留不影响开发**：
+### 加密分层
 
-| 文件 | 原因 |
-|------|------|
-| `application-dev.yml` | 含 JWT 密钥等敏感信息 |
-| `key/*.pem` | RSA 私钥不应公开 |
+```
+              ┌──── 传输中 ────┬──── 存储时 ────┬──── 使用中 ────┐
+登录密码       │  RSA 公钥加密  │  BCrypt 哈希   │  不可逆        │
+模型 API Key  │  RSA 公钥加密  │  AES 对称加密  │  内存明文      │
+             │ (encrypted:true)│  (自动)        │  (调用LLM时)   │
+```
 
-新用户搭建时需自行创建 `application-dev.yml`（可参考 `application-dev.yml.example`）并生成 RSA 密钥。
+### 三层防护
+
+| 层 | 机制 | 保护什么 |
+|---|------|---------|
+| 传输层 | HTTPS/TLS + RSA 公钥加密 | 密码和 API Key 不在网络中明文传输 |
+| 存储层 | AES-256 加密（数据库字段） | 即使数据库泄露，API Key 也是密文 |
+| 认证层 | JWT Token + 知识库角色权限 | 每个操作都校验用户是否有权限 |
+
+### API Key 安全链路
+
+```
+前端拿公钥 → RSA加密 apiKey → POST 请求
+                                     ↓
+后端 resolveApiKey():  RSA私钥解密 → AES加密 → 存入DB
+                                     ↓
+ModelFactory:  从DB读 → AES解密 → 构建OpenAiApi（内存明文 → 调用LLM）
+```
+
+## 项目结构
+
+```
+src/main/java/org/moyu/rag/
+├── RagApplication.java          # 启动类
+├── annotation/                  # 自定义注解
+│   ├── Idempotent.java         # 幂等校验
+│   ├── NoLoginRequired.java    # 跳过 JWT 校验
+│   └── RateLimit.java          # 接口限流
+├── aspect/                      # 切面
+│   ├── IdempotentAspect.java   # Redis 原子判重
+│   └── RateLimitAspect.java    # Lua 令牌桶限流
+├── common/                      # 通用类
+│   ├── ContextUtil.java        # ThreadLocal 获取当前用户
+│   ├── PageResult.java         # 分页结果封装
+│   ├── Result.java             # 统一响应体
+│   └── UserContext.java        # 用户上下文
+├── config/                      # 配置类
+│   ├── FileProperties.java     # 文件上传配置
+│   ├── JacksonConfig.java      # JSON 序列化配置
+│   ├── JwtProperties.java      # JWT 配置
+│   ├── MybatisPlusConfig.java  # MyBatis-Plus 配置
+│   ├── RedisConfig.java        # Redis 序列化配置
+│   ├── ThreadPoolConfig.java   # 异步线程池（核心5/最大20/队列100）
+│   └── WebMvcConfig.java       # CORS + 拦截器 + 文件映射
+├── controller/                  # 接口层
+│   ├── AuthController.java     # 登录/注册/公钥
+│   ├── DocumentController.java # 文档上传/列表/删除
+│   ├── KbMemberController.java # 成员管理
+│   ├── KnowledgeBaseController.java # 知识库 CRUD
+│   ├── ModelConfigController.java   # 模型配置 CRUD
+│   ├── RagController.java      # RAG 检索/对话/流式
+│   └── TokenController.java    # 幂等 token
+├── dto/                         # 数据传输对象
+├── entity/                      # 数据库实体
+│   ├── Document.java           # 文档表
+│   ├── KbMembership.java       # 知识库成员关系表
+│   ├── KnowledgeBase.java      # 知识库表
+│   ├── ModelConfig.java        # 模型配置表
+│   └── User.java               # 用户表
+├── enums/
+│   └── KbRole.java             # 库内角色：MEMBER/ADMIN/BOSS
+├── exception/                   # 异常和全局处理
+│   ├── AuthException.java
+│   ├── FileUploadException.java
+│   ├── GlobalExceptionHandler.java
+│   ├── JwtException.java
+│   └── RateLimitException.java
+├── interceptor/
+│   └── JwtInterceptor.java     # JWT 认证拦截器
+├── mapper/                      # MyBatis-Plus Mapper
+├── service/                     # 业务层
+│   ├── DocumentProcessor.java  # ★ 文档处理流水线（解析→切块→向量化）
+│   ├── DocumentService.java    # 文档上传/列表/删除接口
+│   ├── ModelFactory.java       # ★ 动态模型工厂（provider 分支）
+│   ├── RagService.java         # ★ RAG 编排层（检索→增强→生成）
+│   ├── VectorStoreService.java # ★ pgvector 向量存储/检索
+│   ├── AuthService.java        # 登录/注册服务
+│   ├── KbMemberService.java    # 成员管理服务
+│   ├── KnowledgeBaseService.java # 知识库管理服务
+│   ├── ModelConfigService.java # 模型配置服务
+│   └── impl/                   # 服务实现类
+└── utils/                       # 工具类
+    ├── AesEncryptor.java       # AES 加密/解密（API Key 数据库保护）
+    ├── FileUploadUtil.java     # 通用文件上传（校验 + 原子写入）
+    ├── JwtUtil.java            # JWT 签发/解析
+    └── RsaUtil.java            # RSA 加密/解密（密码 + API Key 传输保护）
+```
 
 ## 扩展指南
 
-### 角色扩展
+### 接入新的嵌入模型提供商
 
-模板默认三种角色，加新角色只需两步：
-
-**1. 在 `RoleEnum` 加枚举值**
+在 `ModelFactory` 的 switch 中添加新分支：
 
 ```java
-public enum RoleEnum {
-    USER(0, "普通用户"),
-    EDITOR(1, "编辑"),          // ← 新增
-    STAFF(2, "运营"),           // ← 新增
-    ADMIN(3, "管理员"),
-    BOSS(4, "超级管理员");
-    // ...
+// 例如接入 Ollama 本地模型
+// 1. pom.xml 加依赖: spring-ai-ollama
+// 2. ModelFactory.createEmbeddingModel() 加 case:
+case "ollama" -> {
+    var api = new OllamaApi(config.getBaseUrl());
+    yield new OllamaEmbeddingModel(api,
+        OllamaEmbeddingOptions.builder().model(config.getModelName()).build());
 }
 ```
 
-**2. 在接口上注解读写**
+然后在 `model_config` 表插入配置即可使用。
+
+### 添加新角色
+
+在 `KbRole` 枚举加值，`atLeast()` 自动生效：
 
 ```java
-// 单一角色
-@RoleRequired(RoleEnum.EDITOR)
-@PutMapping("/article/{id}")
-public Result<Void> updateArticle(@PathVariable Long id, ...) { }
-
-// 多个角色（满足其一即可）
-@RoleRequired({RoleEnum.EDITOR, RoleEnum.STAFF})
-@GetMapping("/content/manage")
-public Result<?> manageContent() { }
-```
-
-不需要加注解文件、不需要改切面。`RoleEnum` 是唯一改动点。
-
-### 异常扩展
-
-加新的业务异常：
-
-**1. 建异常类**
-
-```java
-// exception/OrderException.java
-import lombok.Getter;
-
-@Getter
-public class OrderException extends RuntimeException {
-    private final Type type;
-
-    @Getter
-    @AllArgsConstructor
-    public enum Type {
-        ORDER_NOT_EXIST("订单不存在"),
-        ORDER_CANCELLED("订单已取消");
-
-        private final String message;
-    }
-
-    public OrderException(Type type) {
-        super(type.getMessage());
-        this.type = type;
-    }
+public enum KbRole {
+    MEMBER(0, "群员"),
+    ADMIN(1, "管理员"),
+    CUSTOM_ADMIN(2, "自定义管理员"),  // 新增
+    BOSS(3, "库主");                 // code 改为 3
 }
 ```
 
-**2. 在 `GlobalExceptionHandler` 加处理方法**
+### 自定义限流规则
 
 ```java
-@ExceptionHandler(OrderException.class)
-public ResponseEntity<Result<Void>> handleOrder(OrderException e) {
-    log.warn("订单异常", e);
-    return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-            .body(Result.fail(HttpStatus.BAD_REQUEST.value(), e.getMessage()));
-}
-```
-
-### 限流扩展
-
-`@RateLimit` 支持三个参数，按场景调：
-
-```java
-// 严格（发送验证码）：1秒1个，无突发
+// 发送验证码：1秒1个，无突发
 @RateLimit(ratePerSecond = 1, maxCapacity = 1)
 
-// 普通（查询接口）：每秒100个，突发200
+// 查询接口：每秒100个，突发200
 @RateLimit(ratePerSecond = 100, maxCapacity = 200)
-
-// 中等（登录接口）
-@RateLimit(ratePerSecond = 3, maxCapacity = 5)
 ```
 
-如需自定义限流维度（如按业务 ID 而非 userId/IP），修改 `RateLimitAspect.buildKey()`：
+### 文件类型白名单扩展
 
 ```java
-private String buildKey() {
-    String bizId = request.getParameter("bizId");
-    return "rate:biz:" + bizId;   // 改为按业务 ID 限流
-}
-```
-
-### 文件上传扩展
-
-默认只有通用的扩展名集合 `IMAGE_EXTENSIONS` 和 `DOCUMENT_EXTENSIONS`。加新类型：
-
-```java
-// 视频
-public static final Set<String> VIDEO_EXTENSIONS = Set.of("mp4", "avi", "mov");
-
-// 使用时
-var config = UploadConfig.builder()
-    .allowedExtensions(VIDEO_EXTENSIONS)
-    .maxFileSize(100 * 1024 * 1024)   // 视频 100MB
+// FileUploadUtil 中已内置 IMAGE_EXTENSIONS 和 DOCUMENT_EXTENSIONS
+// 自定义新增类型：
+FileUploadUtil.UploadConfig config = UploadConfig.builder()
+    .allowedExtensions(Set.of("mp4", "avi", "mov"))
+    .maxFileSize(100 * 1024 * 1024)  // 视频 100MB
     .build();
 ```
 
-### 业务实体扩展
+## 角色权限矩阵
 
-模板不包含业务代码。添加新实体的流程：
+| 操作 | MEMBER（群员） | ADMIN（管理员） | BOSS（库主） |
+|------|:---:|:---:|:---:|
+| 查看知识库信息 | ✅ | ✅ | ✅ |
+| 检索 / RAG 对话 | ✅ | ✅ | ✅ |
+| 查看成员列表 | ✅ | ✅ | ✅ |
+| 修改知识库信息 | ❌ | ✅ | ✅ |
+| 上传文档 | ❌ | ✅ | ✅ |
+| 管理模型配置 | ❌ | ✅ | ✅ |
+| 添加/移除成员 | ❌ | ⚠️ 仅群员 | ✅ |
+| 修改成员角色 | ❌ | ⚠️ 仅群员 | ✅ |
+| 删除知识库 | ❌ | ❌ | ✅ |
 
-```
-1. entity/                建实体类（@TableName、@TableId、@TableLogic）
-2. mapper/                建 Mapper 接口（extends BaseMapper<Entity>）
-3. service/ + impl/       建 Service 接口（extends IService<Entity>）+ 实现
-4. controller/            建 Controller（extends BaseController<Service, Entity> 或自定义）
-```
+## 数据库表
 
-使用 `BaseController` 时，步骤 4 一行不写即可获得 6 个接口。
+| 表 | 说明 |
+|---|------|
+| `user` | 系统用户（账号、密码哈希、显示名） |
+| `knowledge_base` | 知识库（名称、描述、所有者、状态） |
+| `kb_membership` | 知识库成员关系（user_id + kb_id + 角色） |
+| `model_config` | 模型配置（provider、base_url、AES加密的 api_key、model_name） |
+| `document` | 上传文档（文件名、路径、状态、chunk 数） |
+| `vector_store` | 向量存储（文本块 + JSONB 元数据 + 向量） |
 
-### 配置属性扩展
-
-用 `@ConfigurationProperties` 集中管理配置，IDE 有自动补全（依赖 `configuration-processor`）：
-
-```java
-@Data
-@Component
-@ConfigurationProperties(prefix = "my-app")
-public class MyAppProperties {
-    private String someKey;
-    private int someValue = 10;    // 默认值
-}
-```
+## 默认配置一览
 
 ```yaml
-# application.yml
-my-app:
-  some-key: hello
-  some-value: 20
+server.port: 8080                     # 服务端口
+file.store-path: ./upload             # 文件存储目录
+jwt.ttl: 604800000                    # Token 7 天过期
+thread-pool: 核心5/最大20/队列100      # 异步处理线程池
+rate-limit: 默认需要登录用户           # 未登录按 IP 限流
 ```
 
 ## 许可证

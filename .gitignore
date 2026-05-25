@@ -45,3 +45,6 @@ application-local.yml
 
 # RSA 密钥文件
 src/main/resources/key/*.pem
+
+# 上传文件目录
+upload/

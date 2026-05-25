@@ -1,10 +1,17 @@
+# yaml-language-server: $schema=https://json.schemastore.org/spring-boot.json
 # ==================== 服务端口 ====================
 server:
   port: 8080
 
 spring:
   application:
-    name: demo
+    name: rag
+
+  # 排除不需要自动配置的模块（模型由 ModelFactory 动态创建，不走自动配置）
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.model.anthropic.autoconfigure.AnthropicChatAutoConfiguration
+      - org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
 
   # ==================== 数据源 ====================
   # 生产环境通过环境变量注入，避免敏感信息写死
@@ -12,26 +19,30 @@ spring:
     url: ${env-database.url}
     username: ${env-database.username}
     password: ${env-database.password}
-    driver-class-name: org.sqlite.JDBC
+    driver-class-name: org.postgresql.Driver
+
+  # ==================== Redis ====================
+  # 幂等 token 存储，开发环境默认 localhost:6379 无密码
+  # 生产环境通过环境变量注入
+  data:
+    redis:
+      host: ${env-redis.host:localhost}
+      port: ${env-redis.port:6379}
 
   # 激活的 profile，对应 application-{profile}.yml（如 application-dev.yml）
-  # profiles:
-  #   active: dev
+  profiles:
+    active: dev
 
 # ==================== MyBatis-Plus ====================
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
-  type-aliases-package: com.example.demo
+  type-aliases-package: org.moyu.rag
   configuration:
     map-underscore-to-camel-case: true
     cache-enabled: false
+    default-enum-type-handler: org.apache.ibatis.type.EnumOrdinalTypeHandler
   global-config:
     banner: false
-    db-config:
-      # 逻辑删除（默认关闭，实体字段加 @TableLogic 才生效）
-      logic-delete-field: deleted
-      logic-delete-value: 1
-      logic-not-delete-value: 0
 
 # ==================== 接口文档（SpringDoc / Swagger）====================
 springdoc:
@@ -44,10 +55,16 @@ springdoc:
 # classpath:key 表示从 resources/key/ 目录加载 private.pem / public.pem
 key-path: ${env-key-path:classpath:key}
 
+# ==================== AES 加密密钥（保护数据库中的 API Key 等敏感字段）====================
+aes:
+  # 默认值仅为开发用，生产环境务必通过环境变量覆盖
+  secret-key: ${env-aes.key:4FXFUvabEpFie4SsXp6Fmn3LWBr1FwmkXADTeDQ5+WQ=}
+
 # ==================== JWT ====================
 jwt:
   # 签名密钥（HMAC-SHA256），生产环境务必更换
-  secret-key: ${env-jwt.key}
+  # 默认值仅为开发用
+  secret-key: ${env-jwt.key:c1eb4202c29eb5bc35d73438665fe4ab95cf74063f08e32d5947b05946fbe273}
   # token 过期时间，默认 7 天（单位：毫秒）
   ttl: ${env-jwt.ttl:604800000}
 
@@ -58,4 +75,4 @@ file:
   port: ${env-file.port:8080}
   sub-path: ${env-file.sub-path:file}
   # 文件本地存储路径
-  store-path: ${env-file.store-path:./upload}
+  store-path: ${env-file.store-path:${user.dir}/upload}
