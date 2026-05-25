@@ -11,12 +11,14 @@ import org.moyu.rag.entity.Document;
 import org.moyu.rag.entity.KbMembership;
 import org.moyu.rag.enums.KbRole;
 import org.moyu.rag.exception.AuthException;
+import org.moyu.rag.exception.FileUploadException;
 import org.moyu.rag.mapper.DocumentMapper;
 import org.moyu.rag.mapper.KbMembershipMapper;
 import org.moyu.rag.service.DocumentProcessor;
 import org.moyu.rag.service.DocumentService;
 import org.moyu.rag.utils.FileUploadUtil;
 import org.springframework.stereotype.Service;
+import org.springframework.util.DigestUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -50,6 +52,27 @@ public class DocumentServiceImpl implements DocumentService {
         Long userId = ContextUtil.getUserId();
         requireAdmin(userId, kbId);
 
+        // 1. 计算文件 MD5，用于内容去重
+        String md5;
+        try {
+            md5 = DigestUtils.md5DigestAsHex(file.getBytes());
+        } catch (IOException e) {
+            throw new FileUploadException(FileUploadException.Type.IO_ERROR, "读取文件失败", e);
+        }
+
+        // 2. 检查同一知识库下是否已存在相同内容的文件
+        Document existing = documentMapper.selectOne(
+                new LambdaQueryWrapper<Document>()
+                        .eq(Document::getKbId, kbId)
+                        .eq(Document::getFileMd5, md5)
+                        .last("LIMIT 1"));
+        if (existing != null) {
+            throw new FileUploadException(
+                    FileUploadException.Type.DUPLICATE_FILE,
+                    "文件已存在（" + existing.getFileName() + "），请勿重复上传");
+        }
+
+        // 3. 保存文件到磁盘
         Path uploadDir = Path.of(fileProperties.getStorePath());
         FileUploadUtil.UploadConfig config = FileUploadUtil.UploadConfig.builder()
                 .allowedExtensions(FileUploadUtil.DOCUMENT_EXTENSIONS)
@@ -65,17 +88,19 @@ public class DocumentServiceImpl implements DocumentService {
             ext = originalName.substring(originalName.lastIndexOf('.') + 1).toLowerCase();
         }
 
+        // 4. 写入数据库，携带 MD5
         Document doc = new Document();
         doc.setKbId(kbId);
         doc.setFileName(originalName != null ? originalName : "unknown");
         doc.setFilePath(storedPath);
         doc.setFileSize(file.getSize());
         doc.setFileType(ext);
+        doc.setFileMd5(md5);
         doc.setStatus(0);
         doc.setUploadedBy(userId);
         documentMapper.insert(doc);
 
-        // 如果指定了 embedding 配置，异步触发处理，不阻塞上传响应
+        // 5. 如果指定了 embedding 配置，异步触发处理，不阻塞上传响应
         if (embeddingConfigId != null) {
             final Long finalDocId = doc.getId();
             taskExecutor.execute(() -> documentProcessor.process(kbId, finalDocId, embeddingConfigId));

@@ -74,6 +74,7 @@ CREATE TABLE document (
     file_path        VARCHAR(1000)   NOT NULL,
     file_size        BIGINT          NOT NULL DEFAULT 0,
     file_type        VARCHAR(100),
+    file_md5         VARCHAR(64),                            -- 文件 MD5 哈希，用于内容去重
     status           SMALLINT        NOT NULL DEFAULT 0,    -- 0=处理中, 1=就绪, 2=失败
     chunk_count      INT             DEFAULT 0,
     uploaded_by      BIGINT          NOT NULL,
@@ -81,6 +82,7 @@ CREATE TABLE document (
     update_time      TIMESTAMP     NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_doc_kb ON document(kb_id);
+CREATE INDEX idx_doc_md5 ON document(kb_id, file_md5);
 
 COMMENT ON TABLE document IS '知识库文档';
 

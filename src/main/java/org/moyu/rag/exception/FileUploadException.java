@@ -27,6 +27,8 @@ public class FileUploadException extends RuntimeException {
         MIME_TYPE_NOT_ALLOWED,
         /** 文件大小超过上限 */
         FILE_TOO_LARGE,
+        /** 文件内容重复（MD5 碰撞） */
+        DUPLICATE_FILE,
         /** IO 读写异常 */
         IO_ERROR
     }

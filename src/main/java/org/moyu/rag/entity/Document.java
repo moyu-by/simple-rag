@@ -28,6 +28,9 @@ public class Document {
     /** 0=处理中, 1=就绪, 2=失败 */
     private Integer status;
 
+    /** 文件 MD5 哈希，用于内容去重 */
+    private String fileMd5;
+
     /** 向量化后的 chunk 数量 */
     private Integer chunkCount;
 
