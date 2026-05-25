@@ -91,7 +91,7 @@ public class KbMemberServiceImpl implements KbMemberService {
         KbRole newRole = roleFromString(request.roleInKb());
 
         if (callerId.equals(targetUserId)) {
-            throw new AuthException(AuthException.Type.UNAUTHORIZED, "不能修改自己的角色");
+            throw new AuthException(AuthException.Type.FORBIDDEN, "不能修改自己的角色");
         }
 
         KbMembership targetMembership = requireMembership(targetUserId, kbId);
@@ -116,7 +116,7 @@ public class KbMemberServiceImpl implements KbMemberService {
         KbRole callerRole = requireMembership(callerId, kbId).getRoleInKb();
 
         if (callerId.equals(targetUserId)) {
-            throw new AuthException(AuthException.Type.UNAUTHORIZED, "不能移除自己");
+            throw new AuthException(AuthException.Type.FORBIDDEN, "不能移除自己");
         }
 
         KbMembership targetMembership = requireMembership(targetUserId, kbId);

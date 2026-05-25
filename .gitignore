@@ -52,5 +52,5 @@ upload/
 # Maven 构建残留（vscode 插件可能生成）
 META-INF/
 
-# IDEA 运行生成的临时文件
-org/
+# IDEA 运行生成的临时文件（仅根目录）
+/org/

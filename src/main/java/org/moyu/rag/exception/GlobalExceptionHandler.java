@@ -53,7 +53,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Result<Void>> handleAuth(AuthException e) {
         log.warn("认证异常", e);
         ResponseEntity<Result<Void>> result = switch (e.getType()) {
-            case PASSWORD_ERROR ->
+            case PASSWORD_ERROR, FORBIDDEN ->
                     ResponseEntity.status(HttpStatus.BAD_REQUEST)
                             .body(Result.fail(HttpStatus.BAD_REQUEST.value(), e.getMessage()));
             case TOKEN_EXPIRED, UNAUTHORIZED ->

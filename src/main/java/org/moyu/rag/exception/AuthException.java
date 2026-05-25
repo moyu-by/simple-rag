@@ -8,7 +8,8 @@ public class AuthException extends RuntimeException {
     public enum Type {
         PASSWORD_ERROR,
         TOKEN_EXPIRED,
-        UNAUTHORIZED
+        UNAUTHORIZED,
+        FORBIDDEN
     }
 
     private final Type type;

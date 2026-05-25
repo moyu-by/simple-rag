@@ -96,3 +96,20 @@ CREATE TABLE vector_store (
 );
 CREATE INDEX idx_vector_kb ON vector_store USING btree (((metadata->>'kb_id')::bigint));
 CREATE INDEX idx_vector_embedding ON vector_store USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+-- ==================== 7. 聊天消息表 ====================
+CREATE TABLE chat_message (
+    id               BIGSERIAL       PRIMARY KEY,
+    kb_id            BIGINT          NOT NULL,
+    user_id          BIGINT          NOT NULL,
+    role             VARCHAR(20)     NOT NULL,   -- 'user' / 'assistant'
+    content          TEXT            NOT NULL,
+    sources          JSONB,                     -- 引用来源
+    create_time      TIMESTAMP     NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_chat_kb ON chat_message(kb_id);
+CREATE INDEX idx_chat_kb_time ON chat_message(kb_id, create_time DESC);
+
+COMMENT ON TABLE chat_message IS '聊天消息历史';
+COMMENT ON COLUMN chat_message.role IS '消息角色: user=用户, assistant=AI';
+COMMENT ON COLUMN chat_message.sources IS 'AI 回答的引用来源（JSON 数组）';

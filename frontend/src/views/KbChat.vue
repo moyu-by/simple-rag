@@ -79,7 +79,11 @@
           {{ msg.role === 'user' ? '👤' : '🤖' }}
         </div>
         <div class="msg-content">
-          <div class="msg-text" v-html="renderMarkdown(msg.content)"></div>
+          <!-- 内容为空且正在流式输出时显示打字动画 -->
+          <div v-if="!msg.content && msg.role === 'assistant' && idx === messages.length - 1 && streaming" class="typing-indicator">
+            <span></span><span></span><span></span>
+          </div>
+          <div v-else class="msg-text" v-html="renderMarkdown(msg.content)"></div>
           <!-- 溯源引用 -->
           <div v-if="msg.sources && msg.sources.length > 0" class="msg-sources">
             <el-collapse>
@@ -96,16 +100,6 @@
                 </div>
               </el-collapse-item>
             </el-collapse>
-          </div>
-        </div>
-      </div>
-
-      <!-- 加载动画 -->
-      <div v-if="streaming" class="chat-msg">
-        <div class="msg-avatar">🤖</div>
-        <div class="msg-content">
-          <div class="typing-indicator">
-            <span></span><span></span><span></span>
           </div>
         </div>
       </div>
@@ -145,7 +139,7 @@ import { ElMessage } from 'element-plus'
 import { ArrowLeft, Promotion } from '@element-plus/icons-vue'
 import { kbApi, type KnowledgeBase } from '@/api/knowledgeBase'
 import { modelConfigApi, type ModelConfig } from '@/api/modelConfig'
-import { chatApi, type SearchResult } from '@/api/chat'
+import { chatApi, type SearchResult, type MessagePair } from '@/api/chat'
 
 const route = useRoute()
 const router = useRouter()
@@ -180,12 +174,19 @@ const hints = [
 
 onMounted(async () => {
   try {
-    const [kbRes, modelRes] = await Promise.all([
+    const [kbRes, modelRes, historyRes] = await Promise.all([
       kbApi.get(kbId),
       modelConfigApi.list(kbId),
+      chatApi.loadHistory(kbId),
     ])
     kb.value = kbRes.data
     models.value = modelRes.data
+    // 加载聊天历史
+    messages.value = historyRes.data.map(m => ({
+      role: m.role,
+      content: m.content,
+      sources: m.sources || undefined,
+    }))
     if (embeddingModels.value.length > 0) {
       embeddingConfigId.value = embeddingModels.value[0].id
     }
@@ -219,11 +220,19 @@ async function sendMessage(text: string) {
   inputText.value = ''
   messages.value.push({ role: 'user', content: text })
 
+  // 保存用户消息到后端
+  chatApi.saveMessage(kbId, { role: 'user', content: text }).catch(() => {})
+
   // 创建 AI 回复占位
   const aiMsg: Message = { role: 'assistant', content: '' }
   messages.value.push(aiMsg)
 
   streaming.value = true
+
+  // 提取历史消息（除当前这轮外）
+  const history: MessagePair[] = messages.value
+    .slice(0, -2) // 去掉刚加的 user 和占位的 assistant
+    .map(m => ({ role: m.role, content: m.content }))
 
   try {
     const stream = await chatApi.chatStream(kbId, {
@@ -231,6 +240,7 @@ async function sendMessage(text: string) {
       embeddingConfigId: embeddingConfigId.value!,
       chatConfigId: chatConfigId.value!,
       topK: topK.value,
+      history,
     })
 
     if (!stream) {
@@ -242,6 +252,7 @@ async function sendMessage(text: string) {
     const reader = stream.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let currentEvent = ''
 
     while (true) {
       const { done, value } = await reader.read()
@@ -249,41 +260,31 @@ async function sendMessage(text: string) {
 
       buffer += decoder.decode(value, { stream: true })
 
-      // 解析 SSE 事件
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
+      // 按行解析 SSE，每处理一个 data 行就更新 UI 并让出事件循环
+      let idx
+      while ((idx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, idx).trimEnd()
+        buffer = buffer.slice(idx + 1)
 
-      let currentEvent = ''
-      for (const line of lines) {
         if (line.startsWith('event:')) {
           currentEvent = line.slice(6).trim()
         } else if (line.startsWith('data:')) {
           const data = line.slice(5).trim()
-          if (currentEvent === 'data' || !currentEvent) {
-            aiMsg.content += data
+          if (data && (currentEvent === 'data' || !currentEvent)) {
+            messages.value[messages.value.length - 1].content += data
+            messages.value = [...messages.value]
+            // 每个 token 后都让出，确保浏览器逐字渲染
+            await new Promise(r => setTimeout(r, 0))
           }
-          // 触发响应式更新
-          messages.value = [...messages.value]
         }
       }
-    }
-
-    // 处理 buffer 剩余数据
-    if (buffer) {
-      const lines2 = buffer.split('\n')
-      for (const line of lines2) {
-        if (line.startsWith('data:')) {
-          aiMsg.content += line.slice(5).trim()
-        }
-      }
-      messages.value = [...messages.value]
     }
   } catch (err: any) {
     aiMsg.content = aiMsg.content || `错误：${err.message || '请求失败'}`
   } finally {
     streaming.value = false
-    // 流式结束后尝试用同步接口获取 sources
-    // （SSE 流当前不返回 sources，如需溯源可额外调用 search 接口）
+    // 保存 AI 回复到后端
+    chatApi.saveMessage(kbId, { role: 'assistant', content: aiMsg.content }).catch(() => {})
   }
 }
 

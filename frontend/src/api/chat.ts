@@ -11,6 +11,7 @@ export interface ChatParams {
   embeddingConfigId: number
   chatConfigId: number
   topK?: number
+  history?: MessagePair[]
 }
 
 export interface SearchResult {
@@ -24,6 +25,19 @@ export interface SearchResult {
 export interface ChatResult {
   answer: string
   sources: SearchResult[]
+}
+
+export interface ChatHistoryMessage {
+  id: number
+  role: 'user' | 'assistant'
+  content: string
+  sources?: SearchResult[]
+  createTime: string
+}
+
+export interface MessagePair {
+  role: 'user' | 'assistant'
+  content: string
 }
 
 export const chatApi = {
@@ -57,5 +71,20 @@ export const chatApi = {
       throw new Error(err.message || '流式请求失败')
     }
     return response.body
+  },
+
+  /** 获取聊天历史 */
+  loadHistory(kbId: number) {
+    return request.get<any, { code: number; data: ChatHistoryMessage[] }>(
+      `/knowledge-base/${kbId}/chat/history`,
+    )
+  },
+
+  /** 保存单条聊天消息 */
+  saveMessage(kbId: number, params: { role: string; content: string; sourcesJson?: string }) {
+    return request.post<any, { code: number }>(
+      `/knowledge-base/${kbId}/chat/message`,
+      params,
+    )
   },
 }

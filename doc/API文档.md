@@ -362,7 +362,7 @@ PUT /knowledge-base/{kbId}/member/{userId}
 }
 ```
 
-> **错误**：不能修改自己 → `401`
+> **错误**：不能修改自己 → `400` `FORBIDDEN`
 
 ### 4.4 移除成员
 
@@ -725,24 +725,40 @@ POST /knowledge-base/{kbId}/chat/stream
 
 **认证**：需登录，需为该知识库成员
 
-**请求体**：与 [7.3 RAG 对话（一次性返回）](#73-rag-对话一次性返回) 相同
+**请求体**：
+
+```json
+{
+  "query": "怎么退款？",
+  "embeddingConfigId": 2,
+  "chatConfigId": 1,
+  "topK": 3,
+  "history": [
+    { "role": "user", "content": "之前的提问" },
+    { "role": "assistant", "content": "之前的回答" }
+  ]
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|:---:|------|
+| `history` | `array` | ❌ | 历史消息列表，用于上下文连续对话。每项包含 `role`（user/assistant）和 `content` |
+
+> 流式接口与对话接口 **共用同一个请求体**，加上 `history` 即可保持上下文。
 
 **响应**：`text/event-stream`
 
 ```
-event:data
 data:根据
 
-event:data
 data:资料
 
-event:data
 data:，退款
 
 ...
 ```
 
-每个 `data` 事件包含一段生成的 token。前端可用 `EventSource` API 接收并逐字显示。
+每个 `data` 行包含一段生成的 token。前端用 `ReadableStream` 接收并逐字显示。
 
 **curl 测试**：
 
@@ -754,33 +770,65 @@ curl -X POST http://localhost:8080/knowledge-base/1/chat/stream \
   --no-buffer
 ```
 
-**JavaScript 前端示例**：
+### 7.5 聊天历史
 
-```javascript
-const response = await fetch('/knowledge-base/1/chat/stream', {
-  method: 'POST',
-  headers: {
-    'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    query: '怎么退款？',
-    embeddingConfigId: 2,
-    chatConfigId: 1
-  })
-});
+#### 获取历史
 
-const reader = response.body.getReader();
-const decoder = new TextDecoder();
+```http
+GET /knowledge-base/{kbId}/chat/history
+```
 
-while (true) {
-  const { done, value } = await reader.read();
-  if (done) break;
-  const text = decoder.decode(value);
-  // text 格式：event:data\ndata:增量文本\n\n
-  // 根据需要解析 SSE 事件
+**认证**：需登录，需为该知识库成员
+
+**响应**：
+
+```json
+{
+  "code": 200,
+  "data": [
+    {
+      "id": 1,
+      "role": "user",
+      "content": "怎么退款？",
+      "sources": null,
+      "createTime": "2026-05-25T12:00:00"
+    },
+    {
+      "id": 2,
+      "role": "assistant",
+      "content": "根据资料，退款流程如下...",
+      "sources": [],
+      "createTime": "2026-05-25T12:00:05"
+    }
+  ]
 }
 ```
+
+> 返回最近 50 条消息，按时间正序排列。
+
+#### 保存消息
+
+```http
+POST /knowledge-base/{kbId}/chat/message
+```
+
+**认证**：需登录，需为该知识库成员
+
+**请求体**：
+
+```json
+{
+  "role": "user",
+  "content": "怎么退款？",
+  "sourcesJson": null
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|:---:|------|
+| `role` | `string` | ✅ | `user` 或 `assistant` |
+| `content` | `string` | ✅ | 消息内容（纯文本） |
+| `sourcesJson` | `string` | ❌ | AI 回答的引用来源，JSON 字符串数组 |
 
 ---
 
@@ -821,6 +869,7 @@ GET /idempotent/token
 |:---:|:---:|------|---------|
 | `400` | 400 | 参数校验失败 | `{"code":400,"message":"知识库名称不能为空","data":null}` |
 | `400` | 400 | 文件上传校验失败 | `{"code":400,"message":"File extension '.exe' is not allowed","data":null}` |
+| `400` | 400 | 业务操作不允许（FORBIDDEN） | `{"code":400,"message":"不能修改自己的角色","data":null}` |
 | `401` | 401 | JWT 为空/无效/过期 | `{"code":401,"message":"Token 已过期","data":null}` |
 | `401` | 401 | 无权限访问/操作 | `{"code":401,"message":"权限不足","data":null}` |
 | `401` | 401 | 账号或密码错误 | `{"code":401,"message":"账号或密码错误","data":null}` |

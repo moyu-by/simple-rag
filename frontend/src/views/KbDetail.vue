@@ -35,9 +35,31 @@
               上传文档
             </el-button>
           </el-upload>
+          <input
+            ref="dirInputRef"
+            type="file"
+            webkitdirectory
+            multiple
+            style="display: none"
+            @change="handleDirUpload"
+          />
+          <el-button size="small" :loading="dirUploading" @click="dirInputRef?.click()">
+            <el-icon><FolderOpened /></el-icon>
+            上传文件夹
+          </el-button>
+          <el-button
+            v-if="canManage && selectedDocs.length > 0"
+            size="small"
+            type="warning"
+            @click="showBatchProcessDialog"
+          >
+            <el-icon><Cpu /></el-icon>
+            批量处理 ({{ selectedDocs.length }})
+          </el-button>
         </div>
 
-        <el-table :data="docs" stripe v-loading="docLoading" empty-text="暂无文档" style="width: 100%">
+        <el-table ref="docsTableRef" :data="docs" stripe v-loading="docLoading" empty-text="暂无文档" style="width: 100%" @selection-change="onSelectionChange">
+          <el-table-column type="selection" width="45" />
           <el-table-column prop="fileName" label="文件名" min-width="160">
             <template #default="{ row }">
               <a :href="row.fileUrl" target="_blank" class="file-link">{{ row.fileName }}</a>
@@ -146,10 +168,11 @@
           </el-table-column>
           <el-table-column label="操作" width="180" fixed="right">
             <template #default="{ row }">
-              <template v-if="canManageMembers && row.userId !== authStore.userId">
-                <el-button text type="primary" size="small" @click="showEditMemberRole(row)">改角色</el-button>
-                <el-button text type="danger" size="small" @click="handleRemoveMember(row)">移除</el-button>
-              </template>
+                <template v-if="canManageMembers && row.userId !== authStore.userId">
+                  <el-button text type="primary" size="small" @click="showEditMemberRole(row)">改角色</el-button>
+                  <el-button text type="danger" size="small" @click="handleRemoveMember(row)">移除</el-button>
+                </template>
+                <el-tag v-else-if="row.userId === authStore.userId" size="small" type="info">自己</el-tag>
             </template>
           </el-table-column>
         </el-table>
@@ -201,8 +224,15 @@
     </el-dialog>
 
     <!-- ===== 文档处理弹窗 ===== -->
-    <el-dialog v-model="processDialogVisible" title="处理文档" width="400px">
-      <p style="margin-bottom: 12px">选择嵌入模型来处理文档「{{ processingDoc?.fileName }}」</p>
+    <el-dialog v-model="processDialogVisible" :title="processingBatch ? `批量处理文档 (${selectedDocs.length} 个)` : '处理文档'" width="400px">
+      <p style="margin-bottom: 12px">
+        <template v-if="processingBatch">
+          选择嵌入模型，批量处理选中的 {{ selectedDocs.length }} 个文档
+        </template>
+        <template v-else>
+          选择嵌入模型来处理文档「{{ processingDoc?.fileName }}」
+        </template>
+      </p>
       <el-select v-model="processEmbeddingId" placeholder="请选择嵌入模型" style="width: 100%">
         <el-option
           v-for="m in embeddingModels"
@@ -264,7 +294,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
-import { ArrowLeft, ChatDotRound, Upload, Plus } from '@element-plus/icons-vue'
+import { ArrowLeft, ChatDotRound, Upload, FolderOpened, Plus, Cpu } from '@element-plus/icons-vue'
 import { kbApi, type KnowledgeBase } from '@/api/knowledgeBase'
 import { docApi, type Document } from '@/api/document'
 import { modelConfigApi, type ModelConfig, type ModelConfigParams } from '@/api/modelConfig'
@@ -294,6 +324,47 @@ const uploadHeaders = computed(() => ({
   Authorization: `Bearer ${authStore.token}`,
 }))
 const uploadData = reactive({})
+
+// ===== 文件夹上传 =====
+const dirInputRef = ref<HTMLInputElement>()
+const dirUploading = ref(false)
+
+async function handleDirUpload(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = input.files
+  if (!files || files.length === 0) return
+
+  dirUploading.value = true
+  const allowed = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'md']
+  let successCount = 0
+  let skipCount = 0
+  let failCount = 0
+
+  for (const file of Array.from(files)) {
+    const ext = file.name.split('.').pop()?.toLowerCase() || ''
+    if (!allowed.includes(ext)) {
+      skipCount++
+      continue
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      skipCount++
+      continue
+    }
+    try {
+      await docApi.upload(kbId, file)
+      successCount++
+    } catch {
+      failCount++
+    }
+  }
+
+  dirUploading.value = false
+  // 重置 input 以允许再次选择同一目录
+  input.value = ''
+
+  ElMessage.success(`上传完成：${successCount} 成功，${skipCount} 跳过，${failCount} 失败`)
+  if (successCount > 0) fetchDocs()
+}
 
 function beforeUpload(file: File) {
   const allowed = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'md']
@@ -332,25 +403,62 @@ async function handleDeleteDoc(doc: Document) {
   } catch { /* cancel */ }
 }
 
+// ===== 文档多选 =====
+const docsTableRef = ref()
+const selectedDocs = ref<Document[]>([])
+
+function onSelectionChange(rows: Document[]) {
+  // 只保留可处理的文档（status !== 1）
+  selectedDocs.value = rows.filter(r => r.status !== 1)
+}
+
 // ===== 文档处理 =====
 const processDialogVisible = ref(false)
 const processingDoc = ref<Document | null>(null)
+const processingBatch = ref(false)  // 是否为批量处理模式
 const processEmbeddingId = ref<number | null>(null)
 const processSubmitting = ref(false)
 const embeddingModels = computed(() => models.value.filter(m => m.isActive && m.modelType === 'EMBEDDING'))
 
 function showProcessDialog(doc: Document) {
+  processingBatch.value = false
   processingDoc.value = doc
   processEmbeddingId.value = embeddingModels.value[0]?.id || null
   processDialogVisible.value = true
 }
 
+function showBatchProcessDialog() {
+  if (selectedDocs.value.length === 0) return
+  processingBatch.value = true
+  processingDoc.value = null
+  processEmbeddingId.value = embeddingModels.value[0]?.id || null
+  processDialogVisible.value = true
+}
+
 async function handleProcessDoc() {
-  if (!processEmbeddingId.value || !processingDoc.value) return
+  if (!processEmbeddingId.value) return
   processSubmitting.value = true
   try {
-    await docApi.process(kbId, processingDoc.value.id, processEmbeddingId.value)
-    ElMessage.success('已开始处理')
+    if (processingBatch.value) {
+      // 批量处理
+      const docs = [...selectedDocs.value]
+      let success = 0
+      let fail = 0
+      for (const doc of docs) {
+        try {
+          await docApi.process(kbId, doc.id, processEmbeddingId.value)
+          success++
+        } catch {
+          fail++
+        }
+      }
+      ElMessage.success(`批量处理完成：${success} 成功，${fail} 失败`)
+      selectedDocs.value = []
+      docsTableRef.value?.clearSelection()
+    } else {
+      await docApi.process(kbId, processingDoc.value!.id, processEmbeddingId.value)
+      ElMessage.success('已开始处理')
+    }
     processDialogVisible.value = false
     fetchDocs()
   } catch { /* handled */ }

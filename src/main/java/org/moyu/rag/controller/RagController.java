@@ -1,14 +1,17 @@
 package org.moyu.rag.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.moyu.rag.common.ContextUtil;
 import org.moyu.rag.common.Result;
 import org.moyu.rag.dto.*;
+import org.moyu.rag.entity.ChatMessage;
 import org.moyu.rag.entity.KbMembership;
 import org.moyu.rag.enums.KbRole;
 import org.moyu.rag.exception.AuthException;
+import org.moyu.rag.mapper.ChatMessageMapper;
 import org.moyu.rag.mapper.KbMembershipMapper;
 import org.moyu.rag.service.DocumentProcessor;
 import org.moyu.rag.service.RagService;
@@ -27,6 +30,7 @@ public class RagController {
     private final DocumentProcessor documentProcessor;
     private final RagService ragService;
     private final KbMembershipMapper membershipMapper;
+    private final ChatMessageMapper chatMessageMapper;
 
     /** 触发文档处理：admin+ 权限 */
     @PostMapping("/document/{docId}/process")
@@ -57,11 +61,46 @@ public class RagController {
         requireMembership(kbId);
         int topK = request.topK() != null ? request.topK() : 3;
         RagService.ChatResult result = ragService.chat(kbId, request.query(),
-                request.embeddingConfigId(), request.chatConfigId(), topK);
+                request.embeddingConfigId(), request.chatConfigId(), topK, request.history());
         List<SearchResponse> sources = result.chunks().stream()
                 .map(d -> new SearchResponse(d.getText(), d.getMetadata()))
                 .toList();
         return Result.ok(new RichChatResponse(result.answer(), sources));
+    }
+
+    /** 获取聊天历史 */
+    @GetMapping("/chat/history")
+    public Result<List<ChatMessageResponse>> history(@PathVariable Long kbId) {
+        requireMembership(kbId);
+        List<ChatMessage> list = chatMessageMapper.selectList(
+                new QueryWrapper<ChatMessage>()
+                        .eq("kb_id", kbId)
+                        .orderByDesc("create_time")
+                        .last("LIMIT 50"));
+        // 反转按时间正序返回
+        java.util.Collections.reverse(list);
+        List<ChatMessageResponse> result = list.stream()
+                .map(m -> new ChatMessageResponse(
+                        m.getId(), m.getRole(), m.getContent(),
+                        ragService.parseSources(m.getSources()),
+                        m.getCreateTime()))
+                .toList();
+        return Result.ok(result);
+    }
+
+    /** 保存聊天消息 */
+    @PostMapping("/chat/message")
+    public Result<Void> saveMessage(@PathVariable Long kbId,
+                                     @Valid @RequestBody SaveMessageRequest request) {
+        requireMembership(kbId);
+        ChatMessage msg = new ChatMessage();
+        msg.setKbId(kbId);
+        msg.setUserId(ContextUtil.getUserId());
+        msg.setRole(request.role());
+        msg.setContent(request.content());
+        msg.setSources(request.sourcesJson());
+        chatMessageMapper.insert(msg);
+        return Result.ok();
     }
 
     /** RAG 对话（流式 SSE） */
@@ -73,7 +112,7 @@ public class RagController {
 
         SseEmitter emitter = new SseEmitter(300_000L); // 5 分钟超时
         Flux<String> flux = ragService.chatStream(kbId, request.query(),
-                request.embeddingConfigId(), request.chatConfigId(), topK);
+                request.embeddingConfigId(), request.chatConfigId(), topK, request.history());
 
         flux.subscribe(
                 token -> {
