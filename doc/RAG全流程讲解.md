@@ -1,7 +1,7 @@
 # RAG 知识库系统 —— 全流程详解
 
 > 项目：`org.moyu:rag`  
-> 技术栈：Spring Boot 4 + Spring AI 1.1.7 + pgvector + OpenAI 兼容协议  
+> 技术栈：Spring Boot 4 + Spring AI 2.0.0M7 + pgvector + OpenAI 兼容协议  
 
 ---
 
