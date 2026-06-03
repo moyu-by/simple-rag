@@ -28,7 +28,6 @@
             :before-upload="beforeUpload"
             :on-success="onUploadSuccess"
             :show-file-list="false"
-            :data="uploadData"
           >
             <el-button type="primary" size="small">
               <el-icon><Upload /></el-icon>
@@ -123,10 +122,15 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="provider" label="提供商" width="100" />
+          <el-table-column prop="provider" label="提供商" width="100">
+            <template #default="{ row }">
+              <span>{{ row.provider === 'custom' ? 'custom' : row.provider }}</span>
+              <el-tag v-if="row.provider === 'custom' && row.compatType === 'anthropic'" size="small" type="warning" style="margin-left:4px">Anthropic兼容</el-tag>
+            </template>
+          </el-table-column>
           <el-table-column prop="modelName" label="模型" min-width="180" />
           <el-table-column prop="apiKey" label="密钥" width="120">
-            <template #default="{ row }">{{ row.apiKey }}</template>
+            <template #default="{ row }">{{ maskApiKey(row.apiKey) }}</template>
           </el-table-column>
           <el-table-column prop="baseUrl" label="API 地址" min-width="180">
             <template #default="{ row }">{{ row.baseUrl || '-' }}</template>
@@ -198,12 +202,25 @@
         </el-form-item>
         <el-form-item label="提供商" prop="provider">
           <el-select v-model="modelForm.provider" style="width: 100%">
-            <el-option label="OpenAI 兼容协议 (OpenAI/硅基流动/vLLM等)" value="custom" />
-            <el-option label="Anthropic (Claude)" value="anthropic" />
+            <el-option label="OpenAI 官方" value="openai" />
+            <el-option label="Anthropic 官方 (Claude)" value="anthropic" />
+            <el-option label="自定义兼容接口" value="custom" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="modelForm.provider === 'custom'" label="兼容协议" prop="compatType">
+          <el-select v-model="modelForm.compatType" style="width: 100%">
+            <el-option label="OpenAI 兼容（/v1/chat/completions）" value="openai" />
+            <el-option label="Anthropic 兼容（/v1/messages）" value="anthropic" />
           </el-select>
         </el-form-item>
         <el-form-item label="API 地址" prop="baseUrl">
-          <el-input v-model="modelForm.baseUrl" placeholder="留空默认 https://api.openai.com" />
+          <el-input v-model="modelForm.baseUrl" :placeholder="baseUrlPlaceholder" />
+        </el-form-item>
+        <el-form-item v-if="modelForm.provider === 'custom'" label="兼容协议" prop="compatType">
+          <el-select v-model="modelForm.compatType" style="width: 100%">
+            <el-option label="OpenAI 兼容（/v1/chat/completions）" value="openai" />
+            <el-option label="Anthropic 兼容（/v1/messages）" value="anthropic" />
+          </el-select>
         </el-form-item>
         <el-form-item label="API 密钥" prop="apiKey">
           <el-input v-model="modelForm.apiKey" placeholder="sk-..." show-password />
@@ -291,7 +308,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { ArrowLeft, ChatDotRound, Upload, FolderOpened, Plus, Cpu } from '@element-plus/icons-vue'
@@ -313,6 +330,10 @@ const kb = ref<KnowledgeBase | null>(null)
 const canManage = computed(() => kb.value?.myRole === '库主' || kb.value?.myRole === '管理员')
 const canManageMembers = computed(() => kb.value?.myRole === '库主' || kb.value?.myRole === '管理员')
 
+// 轮询 AbortController —— 组件卸载时取消所有文档轮询
+const pollAbort = new AbortController()
+onUnmounted(() => pollAbort.abort())
+
 // ===== Tab 状态 =====
 const activeTab = ref('docs')
 
@@ -323,7 +344,7 @@ const docLoading = ref(false)
 const uploadHeaders = computed(() => ({
   Authorization: `Bearer ${authStore.token}`,
 }))
-const uploadData = reactive({})
+// 已由 axios 拦截器统一携带 token，无需额外 data
 
 // ===== 文件夹上传 =====
 const dirInputRef = ref<HTMLInputElement>()
@@ -435,29 +456,64 @@ function showBatchProcessDialog() {
   processDialogVisible.value = true
 }
 
+// 轮询文档状态，直到处理完成或失败
+function pollDocumentStatus(docId: number, interval = 2000, maxAttempts = 150): Promise<number> {
+  return new Promise((resolve) => {
+    let attempts = 0
+    const timer = setInterval(async () => {
+      if (pollAbort.signal.aborted) {
+        clearInterval(timer)
+        resolve(-1)
+        return
+      }
+      attempts++
+      try {
+        const res = await docApi.get(kbId, docId)
+        const status = res.data.status
+        if (status === 1 || status === 2 || attempts >= maxAttempts) {
+          clearInterval(timer)
+          resolve(status)
+        }
+      } catch {
+        if (attempts >= maxAttempts) {
+          clearInterval(timer)
+          resolve(-1)
+        }
+      }
+    }, interval)
+  })
+}
+
 async function handleProcessDoc() {
   if (!processEmbeddingId.value) return
   processSubmitting.value = true
   try {
     if (processingBatch.value) {
-      // 批量处理
+      // 批量异步处理：并发发出所有请求，再统一等待
       const docs = [...selectedDocs.value]
-      let success = 0
-      let fail = 0
-      for (const doc of docs) {
-        try {
-          await docApi.process(kbId, doc.id, processEmbeddingId.value)
-          success++
-        } catch {
-          fail++
-        }
-      }
+      const promises = docs.map(doc =>
+        docApi.process(kbId, doc.id, processEmbeddingId.value!)
+          .then(() => pollDocumentStatus(doc.id))
+          .catch(() => -1)
+      )
+      const results = await Promise.all(promises)
+      const success = results.filter(s => s === 1).length
+      const fail = results.filter(s => s !== 1).length
       ElMessage.success(`批量处理完成：${success} 成功，${fail} 失败`)
       selectedDocs.value = []
       docsTableRef.value?.clearSelection()
     } else {
-      await docApi.process(kbId, processingDoc.value!.id, processEmbeddingId.value)
-      ElMessage.success('已开始处理')
+      // 单个异步处理：发出请求后轮询状态
+      const docId = processingDoc.value!.id
+      await docApi.process(kbId, docId, processEmbeddingId.value)
+      const status = await pollDocumentStatus(docId)
+      if (status === 1) {
+        ElMessage.success('处理完成')
+      } else if (status === 2) {
+        ElMessage.error('处理失败')
+      } else {
+        ElMessage.warning('处理超时，请稍后刷新查看')
+      }
     }
     processDialogVisible.value = false
     fetchDocs()
@@ -476,6 +532,7 @@ const modelForm = reactive<ModelConfigParams>({
   name: '',
   modelType: 'CHAT',
   provider: 'custom',
+  compatType: 'openai',
   baseUrl: '',
   apiKey: '',
   modelName: '',
@@ -488,6 +545,14 @@ const modelRules: FormRules = {
   modelName: [{ required: true, message: '请输入模型名称', trigger: 'blur' }],
   apiKey: [{ required: true, message: '请输入 API 密钥', trigger: 'blur' }],
 }
+const baseUrlPlaceholder = computed(() => {
+  switch (modelForm.provider) {
+    case 'openai': return '留空默认 https://api.openai.com'
+    case 'anthropic': return '留空默认 https://api.anthropic.com'
+    case 'custom': return '自定义接口地址（必填）'
+    default: return ''
+  }
+})
 
 async function fetchModels() {
   modelLoading.value = true
@@ -504,8 +569,9 @@ function openModelDialog(model?: ModelConfig) {
     modelForm.name = model.name
     modelForm.modelType = model.modelType
     modelForm.provider = model.provider
+    modelForm.compatType = model.compatType || 'openai'
     modelForm.baseUrl = model.baseUrl || ''
-    modelForm.apiKey = ''
+    modelForm.apiKey = ''  // 编辑时不回显密钥，留空则不修改
     modelForm.modelName = model.modelName
     modelForm.isActive = model.isActive
   } else {
@@ -513,6 +579,7 @@ function openModelDialog(model?: ModelConfig) {
     modelForm.name = ''
     modelForm.modelType = 'CHAT'
     modelForm.provider = 'custom'
+    modelForm.compatType = 'openai'
     modelForm.baseUrl = ''
     modelForm.apiKey = ''
     modelForm.modelName = ''
@@ -528,6 +595,12 @@ async function handleModelSubmit() {
   try {
     const params = { ...modelForm }
     if (!params.baseUrl) delete params.baseUrl
+    // 非 custom 提供商不需要 compatType
+    if (params.provider !== 'custom') delete params.compatType
+    // 编辑时如果 apiKey 为空，不修改密钥
+    if (!params.apiKey && editingModel.value) {
+      delete params.apiKey
+    }
     if (editingModel.value) {
       await modelConfigApi.update(kbId, editingModel.value.id, params)
       ElMessage.success('修改成功')
@@ -650,6 +723,12 @@ function roleTagType(role: string): 'success' | 'warning' | '' {
   return 'success'
 }
 
+// 掩码显示 API 密钥（显示前4后4）
+function maskApiKey(key: string): string {
+  if (!key || key.length < 8) return key
+  return key.slice(0, 4) + '****' + key.slice(-4)
+}
+
 // ===== 初始化 =====
 onMounted(async () => {
   try {
@@ -662,6 +741,10 @@ onMounted(async () => {
   fetchDocs()
   fetchModels()
   fetchMembers()
+  // 动态设置页面标题
+  if (kb.value?.name) {
+    document.title = `${kb.value.name} - RAG 知识库系统`
+  }
 })
 </script>
 

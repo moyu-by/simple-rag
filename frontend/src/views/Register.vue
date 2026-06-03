@@ -72,6 +72,7 @@ import { authApi } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
 import { encryptPassword } from '@/utils/crypto'
 
+document.title = '注册 - RAG 知识库系统'
 const router = useRouter()
 const authStore = useAuthStore()
 const formRef = ref<FormInstance>()

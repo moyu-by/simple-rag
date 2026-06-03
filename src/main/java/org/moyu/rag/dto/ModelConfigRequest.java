@@ -12,6 +12,8 @@ public record ModelConfigRequest(
         @NotBlank(message = "配置名称不能为空") String name,
         @NotBlank(message = "模型类型不能为空") String modelType,
         @NotBlank(message = "提供商不能为空") String provider,
+        /** 兼容协议: openai / anthropic（仅 provider=custom 时生效） */
+        String compatType,
         String baseUrl,
         @NotBlank(message = "API密钥不能为空") String apiKey,
         @NotBlank(message = "模型名称不能为空") String modelName,

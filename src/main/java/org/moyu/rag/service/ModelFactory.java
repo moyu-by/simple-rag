@@ -1,6 +1,5 @@
 package org.moyu.rag.service;
 
-import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.openai.client.okhttp.OpenAIOkHttpClient;
 import com.openai.client.okhttp.OpenAIOkHttpClientAsync;
@@ -22,16 +21,16 @@ import org.springframework.stereotype.Service;
 /**
  * 运行时模型工厂。
  *
- * <p>根据 model_config 表的 {@code provider} 字段动态构建不同提供商的模型实例，
- * 支持不同知识库使用不同的 API key 和 base_url。</p>
+ * <p>根据 model_config 表的 {@code provider} + {@code compatType} 动态构建模型实例。</p>
  *
- * <h3>支持列表</h3>
- * <table>
- *   <tr><th>provider</th><th>对话</th><th>嵌入</th><th>说明</th></tr>
- *   <tr><td>openai / custom</td><td>✅</td><td>✅</td><td>OpenAI 兼容协议（OneAPI、硅基流动、vLLM 等）</td></tr>
- *   <tr><td>anthropic</td><td>✅</td><td>❌</td><td>Anthropic Claude（仅对话，无嵌入模型）</td></tr>
- *   <tr><td>ollama</td><td>需加依赖</td><td>需加依赖</td><td>本地部署，见下方扩展说明</td></tr>
- * </table>
+ * <h3>路由规则</h3>
+ * <pre>
+ * provider=openai     → OpenAI SDK，base_url 默认 api.openai.com
+ * provider=anthropic  → Anthropic SDK（仅对话，无嵌入）
+ * provider=custom     → 由 compatType 决定用哪个 SDK，用户必须提供 base_url
+ *   ├─ compatType=openai    → OpenAI SDK
+ *   └─ compatType=anthropic → Anthropic SDK
+ * </pre>
  */
 @Service
 @RequiredArgsConstructor
@@ -43,59 +42,72 @@ public class ModelFactory {
     // ==================== 嵌入模型 ====================
 
     public EmbeddingModel createEmbeddingModel(Long configId) {
-        ModelConfig config = modelConfigMapper.selectById(configId);
-        if (config == null) throw new IllegalArgumentException("模型配置不存在: " + configId);
-        return createEmbeddingModel(config);
+        return createEmbeddingModel(requireConfig(configId));
     }
 
     public EmbeddingModel createEmbeddingModel(ModelConfig config) {
-        String provider = safeProvider(config.getProvider());
-        return switch (provider) {
-            case "openai", "custom" -> openAiEmbedding(config);
-            default -> throw new IllegalArgumentException(
-                    "不支持的嵌入模型提供商: " + provider + "（支持 OpenAI 兼容协议）");
-        };
+        String sdk = resolveSdk(config);
+        if ("anthropic".equals(sdk)) {
+            throw new IllegalArgumentException("Anthropic 不提供嵌入模型，请使用 OpenAI 兼容协议");
+        }
+        return openAiEmbedding(config);
     }
 
     // ==================== 对话模型 ====================
 
     public ChatModel createChatModel(Long configId) {
-        ModelConfig config = modelConfigMapper.selectById(configId);
-        if (config == null) throw new IllegalArgumentException("模型配置不存在: " + configId);
-        return createChatModel(config);
+        return createChatModel(requireConfig(configId));
     }
 
     public ChatModel createChatModel(ModelConfig config) {
-        String provider = safeProvider(config.getProvider());
-        return switch (provider) {
-            case "openai", "custom" -> openAiChat(config);
-            case "anthropic" -> anthropicChat(config);
-            default -> throw new IllegalArgumentException("不支持的对话模型提供商: " + provider);
-        };
+        return buildChatModel(config);
     }
 
-    /** 构建流式聊天模型 */
     public ChatModel createStreamingChatModel(Long configId) {
-        ModelConfig config = modelConfigMapper.selectById(configId);
-        if (config == null) throw new IllegalArgumentException("模型配置不存在: " + configId);
-        return createStreamingChatModel(config);
+        return createStreamingChatModel(requireConfig(configId));
     }
 
     public ChatModel createStreamingChatModel(ModelConfig config) {
-        String provider = safeProvider(config.getProvider());
+        return buildChatModel(config);
+    }
+
+    // ==================== 核心路由 ====================
+
+    /**
+     * 统一决定用哪个 SDK：
+     * - provider=openai    → "openai"
+     * - provider=anthropic → "anthropic"
+     * - provider=custom    → 看 compatType（openai/anthropic）
+     */
+    private String resolveSdk(ModelConfig config) {
+        String provider = safe(config.getProvider());
         return switch (provider) {
-            case "openai", "custom" -> openAiChat(config);
-            case "anthropic" -> anthropicChat(config);
-            default -> throw new IllegalArgumentException("不支持的流式对话提供商: " + provider);
+            case "openai" -> "openai";
+            case "anthropic" -> "anthropic";
+            case "custom" -> {
+                String compatType = safe(config.getCompatType());
+                if (compatType.isEmpty() || "openai".equals(compatType)) yield "openai";
+                if ("anthropic".equals(compatType)) yield "anthropic";
+                throw new IllegalArgumentException(
+                        "provider=custom 时 compatType 必须为 openai 或 anthropic，当前值: " + config.getCompatType());
+            }
+            default -> throw new IllegalArgumentException("不支持的 provider: " + provider);
         };
     }
 
-    // ==================== 内部构建方法 ====================
+    private ChatModel buildChatModel(ModelConfig config) {
+        return "anthropic".equals(resolveSdk(config))
+                ? anthropicChat(config)
+                : openAiChat(config);
+    }
+
+    // ==================== SDK 构建 ====================
 
     private OpenAiEmbeddingModel openAiEmbedding(ModelConfig config) {
-        var apiKey = aesEncryptor.decrypt(config.getApiKey());
-        var baseUrl = emptyToDefault(config.getBaseUrl(), "https://api.openai.com");
-        var client = OpenAIOkHttpClient.builder().apiKey(apiKey).baseUrl(baseUrl).build();
+        var client = OpenAIOkHttpClient.builder()
+                .apiKey(aesEncryptor.decrypt(config.getApiKey()))
+                .baseUrl(baseUrlOrDefault(config, "https://api.openai.com"))
+                .build();
         var options = OpenAiEmbeddingOptions.builder()
                 .model(config.getModelName())
                 .build();
@@ -104,13 +116,10 @@ public class ModelFactory {
 
     private OpenAiChatModel openAiChat(ModelConfig config) {
         var apiKey = aesEncryptor.decrypt(config.getApiKey());
-        var baseUrl = emptyToDefault(config.getBaseUrl(), "https://api.openai.com");
-        var client = OpenAIOkHttpClient.builder()
-                .apiKey(apiKey).baseUrl(baseUrl).build();
-        var asyncClient = OpenAIOkHttpClientAsync.builder()
-                .apiKey(apiKey).baseUrl(baseUrl).build();
-        var options = OpenAiChatOptions.builder()
-                .model(config.getModelName()).build();
+        var baseUrl = baseUrlOrDefault(config, "https://api.openai.com");
+        var client = OpenAIOkHttpClient.builder().apiKey(apiKey).baseUrl(baseUrl).build();
+        var asyncClient = OpenAIOkHttpClientAsync.builder().apiKey(apiKey).baseUrl(baseUrl).build();
+        var options = OpenAiChatOptions.builder().model(config.getModelName()).build();
         return OpenAiChatModel.builder()
                 .openAiClient(client).openAiClientAsync(asyncClient).options(options).build();
     }
@@ -124,11 +133,28 @@ public class ModelFactory {
         return AnthropicChatModel.builder().anthropicClient(client).options(options).build();
     }
 
-    private String emptyToDefault(String url, String defaultUrl) {
-        return (url == null || url.isBlank()) ? defaultUrl : url;
+    // ==================== 工具 ====================
+
+    private ModelConfig requireConfig(Long configId) {
+        ModelConfig config = modelConfigMapper.selectById(configId);
+        if (config == null) throw new IllegalArgumentException("模型配置不存在: " + configId);
+        return config;
     }
 
-    private String safeProvider(String provider) {
-        return provider == null ? "openai" : provider.toLowerCase();
+    /**
+     * openai/anthropic provider → 没填就用官方默认地址
+     * custom provider → 必须填 base_url
+     */
+    private String baseUrlOrDefault(ModelConfig config, String defaultUrl) {
+        String url = config.getBaseUrl();
+        if (url != null && !url.isBlank()) return url;
+        if ("custom".equals(safe(config.getProvider()))) {
+            throw new IllegalArgumentException("provider=custom 时必须填写 API 地址");
+        }
+        return defaultUrl;
+    }
+
+    private String safe(String s) {
+        return s == null ? "" : s.toLowerCase();
     }
 }

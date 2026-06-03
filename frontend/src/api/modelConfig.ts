@@ -6,6 +6,7 @@ export interface ModelConfig {
   name: string
   modelType: string
   provider: string
+  compatType: string
   baseUrl: string | null
   apiKey: string
   modelName: string
@@ -19,6 +20,7 @@ export interface ModelConfigParams {
   name: string
   modelType: string
   provider: string
+  compatType?: string
   baseUrl?: string
   apiKey: string
   modelName: string

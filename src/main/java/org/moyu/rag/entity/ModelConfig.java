@@ -22,8 +22,11 @@ public class ModelConfig {
     /** 模型类型: EMBEDDING / CHAT */
     private String modelType;
 
-    /** openai / anthropic / azure / custom */
+    /** openai / anthropic / custom */
     private String provider;
+
+    /** 兼容协议: openai / anthropic（仅 provider=custom 时生效） */
+    private String compatType;
 
     /** 兼容 API 的 base_url，标准 API 可为空 */
     private String baseUrl;

@@ -23,6 +23,10 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class ModelConfigServiceImpl implements ModelConfigService {
 
+    private static final Set<String> EMBEDDING_PROVIDERS = Set.of("openai", "custom");
+    private static final Set<String> CHAT_PROVIDERS = Set.of("openai", "custom", "anthropic");
+    private static final Set<String> VALID_COMPAT_TYPES = Set.of("openai", "anthropic");
+
     private final ModelConfigMapper configMapper;
     private final KbMembershipMapper membershipMapper;
     private final AesEncryptor aesEncryptor;
@@ -30,127 +34,127 @@ public class ModelConfigServiceImpl implements ModelConfigService {
 
     @Override
     public List<ModelConfigResponse> list(Long kbId) {
-        Long userId = ContextUtil.getUserId();
-        requireMembership(userId, kbId);
-
-        List<ModelConfig> configs = configMapper.selectList(
-                new LambdaQueryWrapper<ModelConfig>().eq(ModelConfig::getKbId, kbId));
-
-        return configs.stream().map(c -> new ModelConfigResponse(
-                c.getId(), c.getKbId(), c.getName(), c.getModelType(), c.getProvider(),
-                c.getBaseUrl(), maskApiKey(aesEncryptor.decrypt(c.getApiKey())), c.getModelName(),
-                c.getParameters(), c.getIsActive(), c.getCreatedBy(), c.getCreateTime()
-        )).toList();
+        requireMembership(kbId);
+        return configMapper.selectList(
+                new LambdaQueryWrapper<ModelConfig>().eq(ModelConfig::getKbId, kbId)
+        ).stream().map(this::toResponse).toList();
     }
 
     @Override
     public ModelConfigResponse create(Long kbId, ModelConfigRequest request) {
-        Long userId = ContextUtil.getUserId();
-        requireAdmin(userId, kbId);
-        validateProvider(request.modelType(), request.provider());
+        requireAdmin(kbId);
+        validateRequest(request);
 
         ModelConfig config = new ModelConfig();
         config.setKbId(kbId);
-        config.setName(request.name());
-        config.setModelType(request.modelType());
-        config.setProvider(request.provider());
-        config.setBaseUrl(request.baseUrl());
-        config.setApiKey(resolveApiKey(request));
-        config.setModelName(request.modelName());
-        config.setParameters(request.parameters());
-        config.setIsActive(request.isActive() != null ? request.isActive() : true);
-        config.setCreatedBy(userId);
+        applyRequest(config, request);
+        config.setCreatedBy(ContextUtil.getUserId());
         configMapper.insert(config);
 
-        return new ModelConfigResponse(
-                config.getId(), config.getKbId(), config.getName(), config.getModelType(),
-                config.getProvider(), config.getBaseUrl(), maskApiKey(config.getApiKey()),
-                config.getModelName(), config.getParameters(), config.getIsActive(),
-                config.getCreatedBy(), config.getCreateTime()
-        );
+        return toResponse(config);
     }
 
     @Override
     public ModelConfigResponse update(Long kbId, Long configId, ModelConfigRequest request) {
-        Long userId = ContextUtil.getUserId();
-        requireAdmin(userId, kbId);
-        validateProvider(request.modelType(), request.provider());
+        requireAdmin(kbId);
+        validateRequest(request);
 
-        ModelConfig config = configMapper.selectById(configId);
-        if (config == null || !config.getKbId().equals(kbId)) {
-            throw new AuthException(AuthException.Type.UNAUTHORIZED, "配置不存在");
-        }
-
-        config.setName(request.name());
-        config.setModelType(request.modelType());
-        config.setProvider(request.provider());
-        config.setBaseUrl(request.baseUrl());
-        config.setApiKey(resolveApiKey(request));
-        config.setModelName(request.modelName());
-        config.setParameters(request.parameters());
-        config.setIsActive(request.isActive() != null ? request.isActive() : true);
+        ModelConfig config = getAndCheckOwnership(kbId, configId);
+        applyRequest(config, request);
         configMapper.updateById(config);
 
-        return new ModelConfigResponse(
-                config.getId(), config.getKbId(), config.getName(), config.getModelType(),
-                config.getProvider(), config.getBaseUrl(), maskApiKey(config.getApiKey()),
-                config.getModelName(), config.getParameters(), config.getIsActive(),
-                config.getCreatedBy(), config.getCreateTime()
-        );
+        return toResponse(config);
     }
 
     @Override
     public void delete(Long kbId, Long configId) {
-        Long userId = ContextUtil.getUserId();
-        requireAdmin(userId, kbId);
+        requireAdmin(kbId);
+        getAndCheckOwnership(kbId, configId);
+        configMapper.deleteById(configId);
+    }
 
-        ModelConfig config = configMapper.selectById(configId);
-        if (config == null || !config.getKbId().equals(kbId)) {
-            throw new AuthException(AuthException.Type.UNAUTHORIZED, "配置不存在");
+    // ==================== 映射 ====================
+
+    /** Request → Entity（create 和 update 共用） */
+    private void applyRequest(ModelConfig config, ModelConfigRequest request) {
+        config.setName(request.name());
+        config.setModelType(request.modelType());
+        config.setProvider(request.provider());
+        config.setCompatType(resolveCompatType(request));
+        config.setBaseUrl(request.baseUrl());
+        config.setApiKey(resolveApiKey(request));
+        config.setModelName(request.modelName());
+        config.setParameters(request.parameters());
+        config.setIsActive(request.isActive() != null && request.isActive());
+    }
+
+    /** Entity → Response */
+    private ModelConfigResponse toResponse(ModelConfig c) {
+        return new ModelConfigResponse(
+                c.getId(), c.getKbId(), c.getName(), c.getModelType(),
+                c.getProvider(), c.getCompatType(), c.getBaseUrl(),
+                maskApiKey(aesEncryptor.decrypt(c.getApiKey())),
+                c.getModelName(), c.getParameters(), c.getIsActive(),
+                c.getCreatedBy(), c.getCreateTime()
+        );
+    }
+
+    // ==================== 校验 ====================
+
+    private void validateRequest(ModelConfigRequest request) {
+        // 校验 provider + modelType 组合
+        String provider = safe(request.provider());
+        Set<String> allowed = "EMBEDDING".equals(request.modelType()) ? EMBEDDING_PROVIDERS : CHAT_PROVIDERS;
+        if (!allowed.contains(provider)) {
+            throw new AuthException(AuthException.Type.UNAUTHORIZED,
+                    "模型类型[" + request.modelType() + "]不支持提供商[" + provider + "]");
         }
 
-        configMapper.deleteById(configId);
+        // 校验 compatType（仅 provider=custom 时有意义）
+        String compatType = safe(request.compatType());
+        if ("custom".equals(provider) && !VALID_COMPAT_TYPES.contains(compatType)) {
+            throw new AuthException(AuthException.Type.UNAUTHORIZED,
+                    "provider=custom 时兼容协议必须为 openai 或 anthropic");
+        }
     }
 
     // ==================== 内部方法 ====================
 
-    /** 校验 provider 和 modelType 的组合是否合法 */
-    private static final Set<String> EMBEDDING_PROVIDERS = Set.of("openai", "custom");
-    private static final Set<String> CHAT_PROVIDERS = Set.of("openai", "custom", "anthropic");
-
-    private void validateProvider(String modelType, String provider) {
-        Set<String> allowed = "EMBEDDING".equals(modelType) ? EMBEDDING_PROVIDERS : CHAT_PROVIDERS;
-        if (!allowed.contains(provider == null ? "" : provider.toLowerCase())) {
-            throw new AuthException(AuthException.Type.UNAUTHORIZED,
-                    "模型类型[" + modelType + "]不支持提供商[" + provider + "]，嵌入模型仅支持 OpenAI 兼容协议(custom)，对话模型支持 OpenAI 兼容协议(custom)和 Anthropic");
-        }
+    /** 非 custom 时 compatType 无意义，归一化为 null；custom 时默认 openai */
+    private String resolveCompatType(ModelConfigRequest request) {
+        if (!"custom".equals(safe(request.provider()))) return null;
+        String ct = safe(request.compatType());
+        return ct.isEmpty() ? "openai" : ct;
     }
 
-    /**
-     * 解析传输中的 apiKey：
-     * encrypted=true  → 先 RSA 私钥解密得到明文 → 再 AES 加密落库
-     * encrypted=false → 直接 AES 加密落库（HTTPS 明文传输场景）
-     */
+    private ModelConfig getAndCheckOwnership(Long kbId, Long configId) {
+        ModelConfig config = configMapper.selectById(configId);
+        if (config == null || !config.getKbId().equals(kbId)) {
+            throw new AuthException(AuthException.Type.UNAUTHORIZED, "配置不存在");
+        }
+        return config;
+    }
+
     private String resolveApiKey(ModelConfigRequest request) {
         String plaintext = Boolean.TRUE.equals(request.encrypted())
-                ? rsaUtil.decrypt(request.apiKey())   // RSA 密文 → 明文
-                : request.apiKey();                     // 已是明文
-        return aesEncryptor.encrypt(plaintext);         // 明文 → AES 密文入 DB
+                ? rsaUtil.decrypt(request.apiKey())
+                : request.apiKey();
+        return aesEncryptor.encrypt(plaintext);
     }
 
-    private void requireMembership(Long userId, Long kbId) {
+    private void requireMembership(Long kbId) {
         if (membershipMapper.selectCount(
                 new LambdaQueryWrapper<KbMembership>()
-                        .eq(KbMembership::getUserId, userId)
+                        .eq(KbMembership::getUserId, ContextUtil.getUserId())
                         .eq(KbMembership::getKbId, kbId)) == 0) {
             throw new AuthException(AuthException.Type.UNAUTHORIZED, "无权限访问该知识库");
         }
     }
 
-    private void requireAdmin(Long userId, Long kbId) {
+    private void requireAdmin(Long kbId) {
         KbMembership m = membershipMapper.selectOne(
                 new LambdaQueryWrapper<KbMembership>()
-                        .eq(KbMembership::getUserId, userId)
+                        .eq(KbMembership::getUserId, ContextUtil.getUserId())
                         .eq(KbMembership::getKbId, kbId));
         if (m == null || !m.getRoleInKb().atLeast(KbRole.ADMIN)) {
             throw new AuthException(AuthException.Type.UNAUTHORIZED, "权限不足");
@@ -160,5 +164,9 @@ public class ModelConfigServiceImpl implements ModelConfigService {
     private String maskApiKey(String key) {
         if (key == null || key.length() <= 4) return "****";
         return "****" + key.substring(key.length() - 4);
+    }
+
+    private String safe(String s) {
+        return s == null ? "" : s.toLowerCase();
     }
 }

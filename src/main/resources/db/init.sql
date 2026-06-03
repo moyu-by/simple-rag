@@ -51,7 +51,8 @@ CREATE TABLE model_config (
     id               BIGSERIAL       PRIMARY KEY,
     kb_id            BIGINT          NOT NULL,
     name             VARCHAR(100)    NOT NULL,
-    provider         VARCHAR(50)     NOT NULL,              -- openai / anthropic / azure / custom
+    provider         VARCHAR(50)     NOT NULL,              -- openai / anthropic / custom
+    compat_type      VARCHAR(20)     NOT NULL DEFAULT 'openai',  -- 兼容协议: openai / anthropic（仅 provider=custom 时生效）
     base_url         VARCHAR(500),                          -- 兼容API地址，标准API可为空
     api_key          TEXT            NOT NULL,              -- 加密存储
     model_name       VARCHAR(200)    NOT NULL,
@@ -115,3 +116,8 @@ CREATE INDEX idx_chat_kb_time ON chat_message(kb_id, create_time DESC);
 COMMENT ON TABLE chat_message IS '聊天消息历史';
 COMMENT ON COLUMN chat_message.role IS '消息角色: user=用户, assistant=AI';
 COMMENT ON COLUMN chat_message.sources IS 'AI 回答的引用来源（JSON 数组）';
+
+-- ==================== 兼容性升级 ====================
+-- 已有数据库执行以下语句添加 compat_type 列：
+-- ALTER TABLE model_config ADD COLUMN compat_type VARCHAR(20) NOT NULL DEFAULT 'openai';
+-- COMMENT ON COLUMN model_config.compat_type IS '兼容协议: openai / anthropic（仅 provider=custom 时生效）';

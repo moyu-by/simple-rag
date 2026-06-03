@@ -11,6 +11,7 @@ import org.moyu.rag.mapper.DocumentMapper;
 import org.moyu.rag.mapper.ModelConfigMapper;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -33,10 +34,9 @@ public class DocumentProcessor {
     private final TransactionTemplate transactionTemplate;
 
     /**
-     * 处理文档：解析 → 切块 → 向量化 → 存向量库。
-     * 整个流程在一个事务内，失败时在新事务中标记 status=2。
+     * 同步校验：检查文档和模型配置是否存在，供 Controller 在异步处理前调用。
      */
-    public void process(Long kbId, Long docId, Long embeddingConfigId) {
+    public void validate(Long kbId, Long docId, Long embeddingConfigId) {
         Document doc = documentMapper.selectById(docId);
         if (doc == null || !doc.getKbId().equals(kbId)) {
             throw new AuthException(AuthException.Type.UNAUTHORIZED, "文档不存在");
@@ -45,6 +45,17 @@ public class DocumentProcessor {
         if (embedConfig == null || !embedConfig.getKbId().equals(kbId)) {
             throw new AuthException(AuthException.Type.UNAUTHORIZED, "模型配置不存在");
         }
+    }
+
+    /**
+     * 异步处理文档：解析 → 切块 → 向量化 → 存向量库。
+     * 调用前需先调用 validate() 校验参数。
+     * 失败时在独立事务中标记 status=2。
+     */
+    @Async("taskExecutor")
+    public void process(Long kbId, Long docId, Long embeddingConfigId) {
+        Document doc = documentMapper.selectById(docId);
+        ModelConfig embedConfig = modelConfigMapper.selectById(embeddingConfigId);
 
         try {
             transactionTemplate.executeWithoutResult(status -> {
@@ -55,10 +66,10 @@ public class DocumentProcessor {
                     throw new RuntimeException(e);
                 }
             });
+            log.info("文档 {} 异步处理完成", docId);
         } catch (Exception e) {
             log.error("文档 {} 处理失败", docId, e);
             markFailed(docId);
-            throw new RuntimeException("文档处理失败: " + e.getMessage(), e);
         }
     }
 

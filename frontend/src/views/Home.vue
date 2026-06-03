@@ -111,7 +111,10 @@ const kbRules: FormRules = {
   name: [{ required: true, message: '请输入知识库名称', trigger: 'blur' }],
 }
 
-onMounted(fetchList)
+onMounted(() => {
+  document.title = '我的知识库 - RAG 知识库系统'
+  fetchList()
+})
 
 async function fetchList() {
   loading.value = true

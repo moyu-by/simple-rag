@@ -54,3 +54,9 @@ META-INF/
 
 # IDEA 运行生成的临时文件（仅根目录）
 /org/
+
+# OpenCode 工具缓存
+.reasonix/
+
+# 测试脚本
+frontend/test-puppeteer.mjs

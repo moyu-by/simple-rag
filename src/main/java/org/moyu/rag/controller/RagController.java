@@ -32,11 +32,12 @@ public class RagController {
     private final KbMembershipMapper membershipMapper;
     private final ChatMessageMapper chatMessageMapper;
 
-    /** 触发文档处理：admin+ 权限 */
+    /** 触发文档处理：admin+ 权限，异步执行 */
     @PostMapping("/document/{docId}/process")
     public Result<Void> process(@PathVariable Long kbId, @PathVariable Long docId,
                                 @Valid @RequestBody ProcessRequest request) {
         requireAdmin(kbId);
+        documentProcessor.validate(kbId, docId, request.embeddingConfigId());
         documentProcessor.process(kbId, docId, request.embeddingConfigId());
         return Result.ok();
     }

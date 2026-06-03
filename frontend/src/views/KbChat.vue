@@ -196,6 +196,15 @@ onMounted(async () => {
   } catch {
     router.push('/')
   }
+  // 动态设置页面标题
+  if (kb.value?.name) {
+    document.title = `${kb.value.name} - RAG 知识库系统`
+  }
+})
+
+// 监听知识库名称变化更新标题
+watch(() => kb.value?.name, (name) => {
+  if (name) document.title = `${name} - RAG 知识库系统`
 })
 
 // 滚动到底部
@@ -253,6 +262,7 @@ async function sendMessage(text: string) {
     const decoder = new TextDecoder()
     let buffer = ''
     let currentEvent = ''
+    let streamDone = false
 
     while (true) {
       const { done, value } = await reader.read()
@@ -270,14 +280,21 @@ async function sendMessage(text: string) {
           currentEvent = line.slice(6).trim()
         } else if (line.startsWith('data:')) {
           const data = line.slice(5).trim()
-          if (data && (currentEvent === 'data' || !currentEvent)) {
+          if (data === '[DONE]') {
+            streamDone = true
+            break
+          }
+          if (data && (currentEvent === 'data' || currentEvent === '')) {
             messages.value[messages.value.length - 1].content += data
             messages.value = [...messages.value]
             // 每个 token 后都让出，确保浏览器逐字渲染
             await new Promise(r => setTimeout(r, 0))
           }
+          // 事件行仅对紧接其后的 data 行生效
+          currentEvent = ''
         }
       }
+      if (streamDone) break
     }
   } catch (err: any) {
     aiMsg.content = aiMsg.content || `错误：${err.message || '请求失败'}`

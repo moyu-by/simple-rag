@@ -8,6 +8,7 @@ public record ModelConfigResponse(
         String name,
         String modelType,
         String provider,
+        String compatType,
         String baseUrl,
         String apiKey,
         String modelName,

@@ -1,4 +1,5 @@
 import request from './request'
+import router from '@/router'
 
 export interface SearchParams {
   query: string
@@ -67,6 +68,15 @@ export const chatApi = {
       body: JSON.stringify(params),
     })
     if (!response.ok) {
+      // 401：token 过期，走与 axios 拦截器一致的处理
+      if (response.status === 401) {
+        const isOnAuthPage = router.currentRoute.value.meta.noAuth
+        if (!isOnAuthPage) {
+          localStorage.removeItem('token')
+          localStorage.removeItem('userId')
+          router.push('/login')
+        }
+      }
       const err = await response.json().catch(() => ({ message: '流式请求失败' }))
       throw new Error(err.message || '流式请求失败')
     }
